@@ -220,6 +220,9 @@ class LogTab(ttk.Frame):
         self.log_text.tag_config("WARNING", foreground="#e65100")
         self.log_text.bind("<Control-c>", self._copy_selection)
         self.log_text.bind("<Control-a>", self._select_all)
+        # A disabled Text widget doesn't reliably grab keyboard focus on
+        # click in Tkinter — without this, Ctrl+C/A silently go nowhere.
+        self.log_text.bind("<Button-1>", lambda e: self.log_text.focus_set())
 
         self._poll_queue()
 
@@ -953,6 +956,7 @@ class ChatTab(ttk.Frame):
         self.topic_text.bind("<Control-v>", lambda e: self._clipboard_op(self.topic_text, "<<Paste>>"))
         self.topic_text.bind("<Control-x>", lambda e: self._clipboard_op(self.topic_text, "<<Cut>>"))
         self.topic_text.bind("<Control-a>", self._select_all_topic)
+        self.topic_text.bind("<Button-1>", lambda e: self.topic_text.focus_set())
 
         settings_row = ttk.Frame(self)
         settings_row.pack(fill="x", pady=(0, 6))
@@ -1109,6 +1113,9 @@ class ChatTab(ttk.Frame):
 
         self.chat_log.bind("<Control-c>", self._copy_selection)
         self.chat_log.bind("<Control-a>", self._select_all_log)
+        # Same disabled-widget focus quirk as LogTab — click doesn't
+        # reliably grab keyboard focus without this, so Ctrl+C/A go nowhere.
+        self.chat_log.bind("<Button-1>", lambda e: self.chat_log.focus_set())
 
     def _copy_selection(self, _event=None):
         self.chat_log.event_generate("<<Copy>>")
