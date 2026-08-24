@@ -1,271 +1,190 @@
 # AI Brainstorm
 
-Десктопное приложение для группового брейншторма с несколькими AI-моделями
-(Claude, ChatGPT, Grok, Gemini, MistralAI + до 3 своих) через единый API
-OpenRouter.
+A desktop app for group brainstorming with several AI models at once,
+through a single OpenRouter API key. Claude, ChatGPT, Grok, Gemini and
+MistralAI argue, riff on, and build on each other's ideas — orchestrated
+by a moderator (AI or you) — while you watch, join in, or steer.
 
-Написано на чистом Python + стандартная библиотека (`tkinter`, `urllib`,
-`json`, `threading`, `re`, `logging`) — никаких `pip install` для запуска
-не требуется. Написано с использованием Claude Sonnet 5.
-На данный момент интерфейс только на русском языке.
+Pure Python + standard library (`tkinter`, `urllib`, `json`, `threading`,
+`re`, `logging`) — no `pip install` needed to run it.
 
-## Быстрый запуск (без сборки в exe)
+Русская версия: [README.ru.md](README.ru.md)
 
-Нужен установленный Python 3.9+ (на Windows tkinter идёт в комплекте
-стандартного установщика с python.org — не снимайте галочку `tcl/tk`
-при установке).
+## Running
+
+Requires Python 3.9+ (on Windows, the python.org installer bundles
+tkinter — just don't uncheck `tcl/tk` during setup).
 
 ```
 python main.py
 ```
 
-## Первый запуск
-
-1. Приложение откроется на вкладке **«Настройки»**.
-2. Вставьте свой API-ключ OpenRouter (получить на https://openrouter.ai —
-   раздел Keys, баланс пополняется в разделе Credits).
-3. Нажмите **«Обновить список моделей»** — приложение подтянет с
-   OpenRouter актуальный список моделей по каждому семейству (см. ниже).
-4. В блоке «Стандартные модели» отметьте галочками участников и при
-   желании выберите конкретную модель внутри семейства (выпадающий
-   список) и подправьте персонажа.
-5. При желании настройте **«Ведущего»** и **«Дополнительные модели»**
-   (см. разделы ниже).
-6. Нажмите **«Сохранить настройки»**, перейдите на вкладку **«Чат»**,
-   введите тему, нажмите **«Начать брейншторм»**.
-
-Настройки хранятся через **профили** (см. раздел ниже) — при самом
-первом запуске автоматически создаётся профиль `default`, и всё, что
-вы настроите, сохранится именно в него.
-
-## Профили настроек
-
-Каждый профиль — самостоятельный JSON-файл со СВОИМ API-ключом и всеми
-настройками:
-
-- Windows: `C:\Users\<имя>\.ai_brainstorm\profiles\<имя>.json`
-- Linux/macOS: `~/.ai_brainstorm/profiles/<имя>.json`
-
-На вкладке «Настройки» в самом верху — блок **«Профиль настроек»**, где
-теперь же и основная кнопка **«Сохранить настройки»** (раньше была внизу
-длинной формы — унесли наверх, чтобы не искать её через весь скролл):
-
-- **Загрузить** — переключиться на выбранный профиль (интерфейс
-  автоматически перестроится под его настройки)
-- **Сохранить как…** — сохранить текущие значения формы под новым
-  именем и сразу сделать этот профиль активным. Старый активный
-  профиль на диске при этом НЕ трогается — правится только новый файл.
-- **Удалить** — убрать профиль насовсем (нельзя удалить последний
-  оставшийся)
-- **Сохранить настройки** — пишет все правки формы ниже в текущий
-  активный профиль (это основная кнопка сохранения)
-- **Открыть папку с профилями** — открывает папку с JSON-файлами
-  профилей в системном файловом менеджере (Проводник/Finder/аналог на
-  Linux). Пригодится, чтобы вручную скопировать/бэкапнуть профиль настройки.
-
-Тут же — галочка **«Показывать вкладку «Лог»»** (техническая настройка
-приложения, поэтому рядом с профилями, а не в блоке ведущего).
-
-Приложение запоминает, какой профиль был активен последним, и
-подхватывает его автоматически при следующем запуске — отдельный
-маленький файл `~/.ai_brainstorm/active_profile.json` хранит только имя
-активного профиля, сами настройки лежат в файле самого профиля.
-
-## Семейства моделей и автоактуализация каталога
-
-Вместо жёсткой привязки к одному ID модели, каждое стандартное семейство
-(Claude / ChatGPT / Grok / Gemini / MistralAI) описано регулярным
-выражением, под которое на OpenRouter может подходить сразу несколько
-конкретных моделей (разные версии/тиры одного вендора):
-
-| Семейство | Regex-фильтр |
-|---|---|
-| Claude | `^~?anthropic/claude-.*$` |
-| ChatGPT | `^~?openai/gpt-(?!oss-).*$` (GPT OSS — другое семейство, отсекается) |
-| Grok | `^~?x-ai/grok-.*$` |
-| Gemini | `^~?google/gemini-.*$` |
-| MistralAI | `^~?mistralai/.*$` |
-
-По кнопке **«Обновить список моделей»** приложение запрашивает полный
-каталог OpenRouter (`/api/v1/models`) и раскладывает его по этим
-фильтрам — включая модели вида `~provider/model-latest` (алиас на
-самую свежую версию). Результат кэшируется в `config.json`, так что
-каталог всегда актуален без правок кода — как только провайдер выпустит
-новую модель под тем же паттерном имени, она появится в выпадающем
-списке после следующего обновления.
-
-Пока список ни разу не обновлялся (например, самый первый запуск без
-интернета), в выпадающем списке будет доступна только модель по
-умолчанию для каждого семейства — приложением всё равно можно
-пользоваться.
-
-## Участники: стандартные и свои
-
-- **Стандартные модели** (до 5) — выбор через галочку + выпадающий
-  список конкретной модели внутри семейства. В чате рядом с именем
-  участника показывается выбранная модель в скобках, например
-  «Claude (claude-sonnet-5)».
-- **Дополнительные модели** (до 3, свои) — отдельный блок ниже. Для
-  каждого из 3 слотов указываете точный **ID модели** с OpenRouter
-  (можно выбрать из выпадающего списка после обновления каталога или
-  ввести вручную, формат `провайдер/название`, например
-  `deepseek/deepseek-v4-flash-0731`), название и персонажа. Полный
-  список моделей — https://openrouter.ai/models (кликабельная ссылка
-  прямо в интерфейсе).
-- Итого одновременно в брейншторме может участвовать **от 2 до 8**
-  моделей (5 стандартных + 3 своих). В чате они тоже показывают
-  конкретный ID модели в скобках после названия.
-
-## Уровни рассуждений (reasoning)
-
-У каждого участника (стандартного и кастомного) рядом с персонажем есть
-выбор уровня "рассуждений" — сколько токенов модель может потратить на
-скрытое размышление перед видимым ответом:
-
-| Уровень | Бюджет токенов | Ориентировочный эффект на стоимость реплики |
-|---|---|---|
-| Выключено (по умолчанию) | 0 | без изменений |
-| Низкий | до 1024 | +20–40% |
-| Средний | до 4096 | в 2–3 раза дороже |
-| Высокий | до 16000 | существенный расход — разумно точечно, не всем сразу |
-
-**По умолчанию выключено у всех** — для большинства тем брейншторма
-рассуждения не дают заметного выигрыша в качестве, а счёт может ощутимо
-вырасти незаметно для пользователя. Включайте точечно там, где реально
-нужна глубина (сложные/философские темы, роль "скептика", который ищет
-изъяны в чужих идеях).
-
-Не все модели поддерживают рассуждения — тогда настройка просто не даёт
-эффекта, без ошибки. Подробнее про механизм — кликабельная ссылка на
-документацию OpenRouter прямо в блоке настроек.
-
-## Ведущий, участие пользователя и итог сессии
-
-Вместо жёсткого round-robin порядок реплик определяет **ведущий**:
-
-- **ИИ-ведущий** (по умолчанию) — отдельная модель (по умолчанию самая
-  дешёвая — MistralAI Large) после каждой реплики решает, кто говорит
-  следующим, что именно ему сделать и зачем, чтобы дискуссия была живой
-  и разнообразной. Ведущий скрыт из чата — сам не высказывается. Это
-  дополнительный вызов API на каждый шаг, поэтому и увеличивает
-  стоимость сессии (учитывается в общем счётчике бюджета — стоимость
-  ведущего явно показывается вместе со стоимостью следующей видимой
-  реплики, например «$0.0031 + ведущий $0.0012 = $0.0043»).
-- **Человек-ведущий** — вместо автоматического вызова в чате появляется
-  панель с кнопками участников (и полем опционального комментария,
-  который уйдёт в чат от вашего имени), и вы сами каждый раз выбираете,
-  кто говорит следующим. Не тратит бюджет на оркестрацию, но требует
-  постоянного участия.
-
-Выбирается на вкладке «Настройки» в блоке **«Ведущий и участие»**.
-
-Если включена галочка **«Участвовать в беседе»**, ведущий (в любом
-режиме) может передать слово вам — в чате появится поле для реплики
-(можно ответить или пропустить). Реплики пользователя не учитываются в
-лимите числа реплик и не тратят бюджет.
-
-**На последней реплике сессии** (когда лимит реплик будет достигнут
-сразу после неё) приложение принудительно просит выбранного участника
-подвести итог обсуждения — независимо от того, учёл это ведущий сам
-или нет.
-
-Отдельная галочка **«Ведущий подводит итоги»** (по умолчанию выключена)
-запускает ещё один, отдельный вызов модели ведущего **после** окончания
-всей сессии — с полной историей обсуждения, для тезисного списка
-ключевых идей и точек согласия/разногласий. Результат попадает в чат
-отдельным выделенным сообщением «Итоги от ведущего (модель)». Тоже
-расходует бюджет — учитывается в общей стоимости сессии.
-
-## Вмешательство на горячую
-
-Кнопка **«Вмешаться»** на вкладке «Чат» доступна в течение всей сессии с ИИ-ведущим.
-При нажатии обсуждение поставится на паузу после ближайшей завершённой
-реплики, и появится панель с двумя вариантами:
-
-- **«Продолжить с уточнением»** — текст добавится в историю обсуждения
-  как отдельная реплика от вашего имени, и брейншторм продолжится с
-  учётом уточнения.
-- **«Завершить сессию»** — обсуждение останавливается сразу.
-
-Полезно, если разговор ушёл не туда, а ждать естественной остановки
-по бюджету или лимиту реплик не хочется.
-
-## Бюджет и длина сессии
-
-Два независимых стоп-фактора — сессия останавливается по тому, что
-наступит раньше:
-
-- **Лимит бюджета** ($, настраивается в «Настройках») — включает
-  стоимость реплик участников И вызовов ИИ-ведущего.
-- **Макс. реплик** (настраивается на вкладке «Чат») — считаются только
-  реплики моделей-участников, не пользователя.
-
-OpenRouter возвращает точную стоимость (`usage.cost`) для каждого
-запроса — под каждой репликой в логе показывается её цена, справа
-внизу — живой счётчик общей суммы за сессию.
-
-Кнопка **«Проверить баланс ключа»** (вкладка «Настройки») показывает
-суммарный расход с ключа за всё время. Учтите: это лимит **именно
-ключа** (если вы его настраивали на openrouter.ai/keys), а не общий
-баланс аккаунта — если лимит на ключ не задан, общий остаток средств
-смотрите в разделе Credits на сайте OpenRouter.
-
-## Известный нюанс по стоимости (скрытые токены рассуждений)
-
-У некоторых моделей (включая часть линейки Claude) может быть включено
-расширенное «рассуждение» (extended thinking) — модель тратит токены на
-внутренние размышления, которые не попадают в видимый ответ, но входят
-в стоимость. Из-за этого иногда короткая на вид реплика может стоить
-дороже длинной. Приложение по умолчанию просит модели отключить это
-через единый параметр OpenRouter `reasoning.enabled: false` — провайдеры
-без поддержки reasoning просто игнорируют этот параметр, вреда нет. Если
-для какой-то модели это всё равно не сработает — сообщите, разберём
-отдельно для конкретного провайдера.
-
-Также: если ответ модели обрывается на полуслове — это исчерпан лимит
-`max_tokens` (сейчас 600). В логе такие случаи помечаются припиской
-«[…ответ обрезан по лимиту длины]».
-
-## Логирование и вкладка «Лог»
-
-Технические подробности (какая модель вызывается, сколько стоит, что
-решил ведущий, ошибки провайдера и т.д.) можно смотреть двумя способами:
-
-- **В консоли**, из которой запущен `python main.py` — печатается всегда,
-  подробность управляется константой `DEBUG` в начале `main.py`. Перед
-  сборкой финальной exe-версии поставьте `DEBUG = False` — тогда в
-  консоль будут попадать только предупреждения и ошибки.
-- **Во вкладке «Лог» самого приложения** — независимо от `DEBUG`,
-  включается галочкой «Показывать вкладку «Лог»» на вкладке «Настройки»
-  (блок «Ведущий и участие»). Полезно для обычных пользователей exe-сборки
-  без консоли — та же подробная информация видна прямо в интерфейсе,
-  копируется/выделяется теми же средствами, что и чат (Ctrl+C, Ctrl+A,
-  кнопка «Копировать всё»). Например, сюда попадают предупреждения о
-  временно недоступных моделях (в сам чат такие сообщения теперь не
-  выводятся — ведущий просто выбирает другого участника, а причина
-  видна тут, если интересно).
-
-
-## Сборка в один exe-файл (Windows)
+## Building a single exe (Windows)
 
 ```
 pip install pyinstaller
 pyinstaller --onefile --windowed --icon=favicon.ico --add-data "favicon.ico;." --name AIBrainstorm main.py
 ```
 
-Обратите внимание на `--add-data "favicon.ico;."` — точка с запятой
-(не двоеточие, это Windows-синтаксис PyInstaller) и точка в конце
-означают «положить файл в корень временной папки распаковки», именно
-там его и ищет `_resource_path()` в рантайме.
+Drop a `favicon.ico` next to `main.py` before building if you want a
+custom app icon — `--icon` embeds it into the exe file itself (what
+Explorer shows), while `--add-data` bundles the actual file so the
+running app can also set its own window/taskbar icon at runtime via
+`iconbitmap()` and a direct WinAPI call (`WM_SETICON`) for a crisp
+icon in Alt+Tab and jump lists, not just a blurry upscale. Skip both
+flags if you don't have an icon.
 
-## Структура проекта
+If you rebuild with a different icon after an existing build, delete
+`build/`, `dist/`, and the `.spec` file first — PyInstaller caches
+aggressively.
+
+The exe appears in `dist/AIBrainstorm.exe`. Drop `--windowed` while
+debugging to see console output.
+
+## Interface language
+
+The UI, the app-side prompts sent to the models (personas, moderator
+instructions), and the technical log are all localized together.
+Available languages are plain JSON files in `~/.ai_brainstorm/locales/`:
+
+```
+{"code": "en", "name": "English", "translations": {"key": "text", ...}}
+```
+
+`Russian.json` and `English.json` are created automatically on first
+run and self-heal if deleted or corrupted. Drop in your own file with
+any `code`/`name` (e.g. `French.json`) to add a language — the app
+rescans the folder on every launch, no code changes needed. If the
+saved language can't be found (e.g. a custom file was deleted), the app
+silently falls back to English and remembers that.
+
+Switch languages from the dropdown on the Settings tab — it applies
+immediately, rebuilding the interface in place.
+
+## Profiles
+
+Settings live in named profiles, each a standalone JSON file with its
+own API key:
+
+- Windows: `C:\Users\<name>\.ai_brainstorm\profiles\<name>.json`
+- Linux/macOS: `~/.ai_brainstorm/profiles/<name>.json`
+
+Useful for multiple OpenRouter accounts or different participant sets
+for different occasions. The dropdown on the Settings tab applies a
+profile the moment you pick it — no separate "load" step. "Save As…"
+snapshots the current form under a new name without touching the old
+active profile's file. "Open Settings Folder" opens
+`~/.ai_brainstorm/` directly in the OS file manager.
+
+The active profile name, interface language, and Log tab visibility are
+app-wide settings, stored separately from profile content (in
+`~/.ai_brainstorm/active_profile.json`) — they don't change when you
+switch profiles.
+
+## Participants
+
+**Standard families** (up to 5) — Claude, ChatGPT, Grok, Gemini,
+MistralAI. Each family is matched against OpenRouter's live model list
+by regex, so the dropdown of concrete models self-updates as providers
+ship new ones — click "Refresh Model List" any time. Pick which
+concrete model to use within a family, edit its persona, and set a
+reasoning-token budget (see below).
+
+**Custom models** (up to 3) — any other OpenRouter model by exact ID
+(e.g. `deepseek/deepseek-v4-flash-0731`), with its own name, persona,
+and reasoning level. The ID field autocompletes from the same refreshed
+model list.
+
+2 to 8 participants total. In chat, each one's label shows the exact
+model in use, e.g. "Claude (claude-sonnet-5)".
+
+### Reasoning levels
+
+Optional token budget for a model's hidden "thinking" before its
+visible reply — Off / Low (≤1024) / Medium (≤4096) / High (≤16000).
+Off by default: rarely helps a casual brainstorm and can quietly
+inflate the bill. Not every model supports it; the setting just has no
+effect where it isn't.
+
+## Moderator
+
+Instead of strict round-robin, a moderator decides who speaks next —
+and what they should do, why, and whether it's time to wrap up.
+
+- **AI moderator** (default) — a separate, usually cheap, model call
+  after every reply. Hidden from the chat itself.
+- **Human moderator** — you pick every speaker yourself, no extra API
+  cost. The same panel lets you leave a comment or end the session on
+  the spot.
+
+**Participation** — if enabled, the moderator can occasionally hand the
+floor to you too (capped so it can't happen twice in a row, so a
+biased moderator can't stall the session on you forever). Your replies
+don't count against the reply limit or budget.
+
+**Session summary** — an optional extra call after the session ends,
+asking the moderator model for a bullet-point recap: key ideas, points
+of agreement/disagreement, an overall takeaway.
+
+**Intervene** — pause the discussion mid-flight, leave a note for the
+participants, or end the session right there. A dedicated button in
+AI-moderator mode; built into the speaker-picker panel in human mode.
+
+The very last reply of a session is always steered toward a wrap-up,
+regardless of whether the moderator remembered to ask for one.
+
+## Budget and length
+
+Two independent stop conditions, whichever hits first:
+
+- **Budget** ($, set in Settings) — includes both participant replies
+  and moderator calls. OpenRouter returns an exact cost per request;
+  it's shown under each reply (in italic gray, right-aligned), split
+  out when a moderator call is folded in (e.g. "$0.0031 + moderator
+  $0.0012 = $0.0043").
+- **Max replies** (set on the Chat tab) — counts only participant
+  replies, not the moderator's own calls or your own turns.
+
+A model that starts erroring (rate limits, etc.) is put on a short
+cooldown and excluded from the moderator's choices — quietly, without
+spamming the chat; the reason stays visible in the Log tab.
+
+## Chat display
+
+- `**bold**`, `` `inline code` ``, fenced ` ```code blocks``` `,
+  headers, and bullet lists render properly, not as raw markdown.
+- Replies are visually separated with a rule.
+- Your own notes (topic, comments, replies) are colored distinctly; the
+  session summary gets its own accent color.
+- **Ctrl+C** copies the selection, **Ctrl+A** selects everything,
+  "Copy All" grabs the whole log in one click.
+- **Export…** saves to `.md` or `.txt`, built from the original
+  message text (with all its markdown intact), not from what's
+  rendered on screen.
+
+## Log tab
+
+An optional tab mirroring what a console would show — model calls,
+costs, moderator decisions, errors. Toggle it on the Settings tab; it
+keeps its own history for the whole app session even while hidden.
+Copies and selects the same way the chat log does.
+
+## Project layout
 
 ```
 ai_brainstorm/
-├── main.py             — точка входа, интерфейс на Tkinter, логика ведущего
-├── config.py            — сохранение/загрузка настроек в JSON
-├── models_catalog.py    — семейства моделей (regex), кастомные слоты
-├── api_client.py        — OpenRouter API: чат, ведущий, каталог, баланс
-├── favicon.ico          — иконка приложения (добавьте свою, необязательно)
-└── README.md
+├── main.py             — entry point, Tkinter UI, moderator/worker logic
+├── config.py            — profiles, app-wide settings, locale folder paths
+├── models_catalog.py    — model families, reasoning levels, catalog assembly
+├── api_client.py        — OpenRouter calls: chat, moderator, model list, key balance
+├── i18n.py               — translation loading/fallback, built-in RU/EN dictionaries
+├── favicon.ico           — app icon (optional, add your own)
+├── README.md / README.ru.md
 ```
+
+## Changelog
+
+- **2026-08-23** — First release.
+- **2026-08-24** — Added localization (multi-language interface, prompts,
+  and log) and various logic bug fixes.
+

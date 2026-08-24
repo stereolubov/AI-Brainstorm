@@ -1,19 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-Каталог "семейств" моделей для брейншторма.
+Model "family" catalog for the brainstorm.
 
-Вместо жёсткой привязки к одному ID модели, каждое семейство описывается
-регулярным выражением — под него на OpenRouter может подходить сразу
-несколько конкретных моделей (разные версии/тиры одного вендора).
-Список конкретных ID подтягивается динамически через
-api_client.build_family_options() и кэшируется в config.json — так
-каталог сам актуализируется, когда провайдер выпускает новую модель,
-без правок кода.
+Each standard family is matched by a regex against the live OpenRouter
+model list (see api_client.build_family_options), instead of a hardcoded
+single model ID — so the catalog self-updates as providers ship new
+models, no code changes needed.
 
-default_model — то, что выбрано по умолчанию, пока пользователь не
-выбрал другую модель внутри семейства (или пока список ещё не обновлён
-из сети — тогда именно default_model остаётся единственным вариантом).
+default_persona is plain seed text for a brand-new profile (English,
+since English is the default profile language) — NOT resolved through
+i18n, because persona text is saved per-profile and freely editable;
+its language has no effect on how the app functions.
+
+reasoning level codes ARE translated live (see reasoning_level_label)
+since that's an actual UI label the user sees in a dropdown, not saved
+content.
 """
+
+import i18n
 
 FAMILIES = [
     {
@@ -23,9 +27,10 @@ FAMILIES = [
         "pattern": r"^~?anthropic/claude-.*$",
         "default_model": "anthropic/claude-sonnet-5",
         "default_persona": (
-            "Ты — вдумчивый философ-технарь. Рассуждаешь глубоко, "
-            "связываешь разрозненные идеи в систему, любишь задавать "
-            "уточняющие вопросы, но всегда возвращаешься к сути темы."
+            "You are a thoughtful tech-savvy philosopher. You reason deeply, "
+            "connect disparate ideas into a coherent system, like to ask "
+            "clarifying questions, but always bring the discussion back to "
+            "the core of the topic."
         ),
     },
     {
@@ -35,9 +40,9 @@ FAMILIES = [
         "pattern": r"^~?openai/gpt-(?!oss-).*$",
         "default_model": "openai/gpt-5.6-terra",
         "default_persona": (
-            "Ты — прагматичный технарь-скептик. Ищешь слабые места в "
-            "идеях других участников, но конструктивно — сразу "
-            "предлагаешь, как их устранить, и держишься конкретики."
+            "You are a pragmatic, skeptical engineer. You look for weak "
+            "spots in other participants' ideas, but constructively — you "
+            "immediately suggest how to fix them, and you stay concrete."
         ),
     },
     {
@@ -47,9 +52,10 @@ FAMILIES = [
         "pattern": r"^~?x-ai/grok-.*$",
         "default_model": "x-ai/grok-4.6",
         "default_persona": (
-            "Ты — дерзкий генератор нестандартных идей. Не боишься "
-            "предлагать провокационные варианты, любишь юмор, но "
-            "всегда возвращаешь разговор к пользе для темы обсуждения."
+            "You are a bold generator of unconventional ideas. You're not "
+            "afraid to propose provocative options, you enjoy humor, but "
+            "you always bring the conversation back to something useful "
+            "for the topic."
         ),
     },
     {
@@ -59,9 +65,10 @@ FAMILIES = [
         "pattern": r"^~?google/gemini-.*$",
         "default_model": "google/gemini-3.1-pro-preview",
         "default_persona": (
-            "Ты — системный мыслитель. Хорошо структурируешь и "
-            "обобщаешь чужие идеи, находишь связи между репликами "
-            "разных участников, склонен подводить промежуточные итоги."
+            "You are a systems thinker. You're good at structuring and "
+            "summarizing other people's ideas, finding connections between "
+            "different participants' replies, and tend to offer interim "
+            "summaries."
         ),
     },
     {
@@ -71,36 +78,44 @@ FAMILIES = [
         "pattern": r"^~?mistralai/.*$",
         "default_model": "mistralai/mistral-large-2512",
         "default_persona": (
-            "Ты — дружелюбный собеседник с лёгким характером. "
-            "Добавляешь в обсуждение простоту и человечность, "
-            "переводишь сложные идеи на понятный язык."
+            "You are a friendly conversationalist with an easygoing "
+            "character. You bring simplicity and warmth to the discussion, "
+            "and translate complex ideas into plain language."
         ),
     },
 ]
 
-CUSTOM_SLOT_COLORS = ["#8E44AD", "#16A085", "#D4AC0D"]  # фиолетовый, бирюзовый, охра
+CUSTOM_SLOT_COLORS = ["#8E44AD", "#16A085", "#D4AC0D"]
 CUSTOM_DEFAULT_PERSONA = (
-    "Ты участник группового брейншторма. Отвечай по существу, кратко, "
-    "реагируя на реплики остальных участников."
+    "You are a participant in a group brainstorm. Reply concisely and to "
+    "the point, reacting to what other participants said."
 )
 
-MODERATOR_DEFAULT_MODEL = "mistralai/mistral-large-2512"  # самый дешёвый вариант
+MODERATOR_DEFAULT_MODEL = "openai/gpt-4o-mini"
 
-# Уровни "рассуждений" (reasoning): вместо жёсткого вкл/выкл — управляемый
-# бюджет токенов на скрытое размышление модели перед видимым ответом.
-# По умолчанию выключено — для большинства тем брейншторма не даёт
-# заметной пользы, а счёт может ощутимо вырасти. Явно измеряем в токенах
-# (а не в "low/medium/high" эффорте самого провайдера), чтобы стоимость
-# была предсказуемой, а не зависела от того, как конкретный провайдер
-# интерпретирует расплывчатый "эффорт".
-REASONING_LEVELS = {
-    "Выключено": None,
-    "Низкий": 1024,
-    "Средний": 4096,
-    "Высокий": 16000,
+# Reasoning token budget per level. Off by default: rarely helps for a
+# casual brainstorm and can silently inflate cost. Stored/compared by
+# neutral code ("off"/"low"/...), never by localized label — otherwise
+# switching the UI language would break saved settings.
+REASONING_LEVELS = {"off": None, "low": 1024, "medium": 4096, "high": 16000}
+REASONING_LEVEL_CODES = list(REASONING_LEVELS.keys())
+DEFAULT_REASONING_LEVEL = "off"
+
+# Pre-i18n profiles stored the Russian word directly; migrate on read.
+_LEGACY_REASONING_MAP = {
+    "Выключено": "off", "Низкий": "low", "Средний": "medium", "Высокий": "high",
 }
-REASONING_LEVEL_NAMES = list(REASONING_LEVELS.keys())
-DEFAULT_REASONING_LEVEL = "Выключено"
+
+
+def normalize_reasoning_level(value):
+    if value in REASONING_LEVELS:
+        return value
+    return _LEGACY_REASONING_MAP.get(value, DEFAULT_REASONING_LEVEL)
+
+
+def reasoning_level_label(code):
+    """Localized label for a reasoning level code, e.g. 'off' -> 'Off'."""
+    return i18n.t(f"reasoning_{normalize_reasoning_level(code)}")
 
 
 def find_family(key):
@@ -111,25 +126,20 @@ def find_family(key):
 
 
 def short_model_name(model_id):
-    """Убирает провайдерский префикс для компактного отображения в скобках:
-    'anthropic/claude-sonnet-5' -> 'claude-sonnet-5'."""
+    """'anthropic/claude-sonnet-5' -> 'claude-sonnet-5' (drops the ~latest
+    alias prefix too, if present)."""
     cleaned = model_id.lstrip("~")
-    if "/" in cleaned:
-        return cleaned.split("/", 1)[1]
-    return cleaned
+    return cleaned.split("/", 1)[1] if "/" in cleaned else cleaned
 
 
 def build_full_catalog(config):
     """
-    Собирает полный список участников брейншторма на основе текущих
-    настроек: отмеченные семейства (с выбранной внутри них конкретной
-    моделью) + заполненные кастомные слоты.
+    Assembles the full participant list from current settings: checked
+    families (with their chosen concrete model) + filled custom slots.
 
-    Возвращает список словарей: {id, label, color, persona, reasoning_max_tokens}
-    "label" уже содержит конкретную модель в скобках, например
-    «Claude (claude-sonnet-5)» — для отображения в чате.
-    "reasoning_max_tokens" — None (рассуждения выключены) либо число
-    токенов-бюджета на скрытое размышление модели перед ответом.
+    Returns a list of {id, label, color, persona, reasoning_max_tokens}.
+    "label" already includes the concrete model in parentheses, e.g.
+    "Claude (claude-sonnet-5)" — for display in chat.
     """
     full = []
 
@@ -144,13 +154,13 @@ def build_full_catalog(config):
             continue
         model_id = family_choice.get(key) or fam["default_model"]
         persona = personas.get(key) or fam["default_persona"]
-        level_name = reasoning_levels.get(key) or DEFAULT_REASONING_LEVEL
+        level_code = normalize_reasoning_level(reasoning_levels.get(key))
         full.append({
             "id": model_id,
             "label": f"{fam['label']} ({short_model_name(model_id)})",
             "color": fam["color"],
             "persona": persona,
-            "reasoning_max_tokens": REASONING_LEVELS.get(level_name),
+            "reasoning_max_tokens": REASONING_LEVELS.get(level_code),
         })
 
     for index, item in enumerate(config.get("custom_models", []) or []):
@@ -163,13 +173,13 @@ def build_full_catalog(config):
         short_name = short_model_name(model_id)
         label = f"{raw_label} ({short_name})" if raw_label else short_name
         persona = (item.get("persona") or "").strip() or CUSTOM_DEFAULT_PERSONA
-        level_name = item.get("reasoning_level") or DEFAULT_REASONING_LEVEL
+        level_code = normalize_reasoning_level(item.get("reasoning_level"))
         full.append({
             "id": model_id,
             "label": label,
             "color": CUSTOM_SLOT_COLORS[index % len(CUSTOM_SLOT_COLORS)],
             "persona": persona,
-            "reasoning_max_tokens": REASONING_LEVELS.get(level_name),
+            "reasoning_max_tokens": REASONING_LEVELS.get(level_code),
         })
 
     return full

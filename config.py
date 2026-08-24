@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Хранение настроек приложения через ПРОФИЛИ.
+Profile-based settings storage.
 
-Каждый профиль — самостоятельный JSON-файл со своим API-ключом и всеми
-настройками (удобно для нескольких аккаунтов OpenRouter или разных
-наборов участников под разные случаи). Профили лежат в:
-  Windows: C:\\Users\\<имя>\\.ai_brainstorm\\profiles\\<имя>.json
-  Linux/Mac: ~/.ai_brainstorm/profiles/<имя>.json
+Each profile is a standalone JSON file with its own API key and settings
+(useful for multiple OpenRouter accounts or different participant sets):
+  Windows: C:\\Users\\<name>\\.ai_brainstorm\\profiles\\<name>.json
+  Linux/Mac: ~/.ai_brainstorm/profiles/<name>.json
 
-Отдельный маленький файл-указатель хранит только имя активного профиля:
-  ~/.ai_brainstorm/active_profile.json  ->  {"active_profile": "default"}
+A small pointer file holds app-wide state that isn't tied to any one
+profile — active profile name, UI language, debug tab visibility:
+  ~/.ai_brainstorm/active_profile.json ->
+      {"active_profile": "default", "language": "en", "debug_tab_enabled": false}
 
-Так при следующем запуске приложение знает, какой профиль подхватить
-автоматически, без выбора вручную.
+Locale files live in the sibling locales/ folder — see i18n.py.
 """
 
 import json
@@ -22,37 +22,38 @@ from models_catalog import MODERATOR_DEFAULT_MODEL
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".ai_brainstorm")
 PROFILES_DIR = os.path.join(CONFIG_DIR, "profiles")
+LOCALES_DIR = os.path.join(CONFIG_DIR, "locales")
 POINTER_PATH = os.path.join(CONFIG_DIR, "active_profile.json")
 
 DEFAULT_PROFILE_NAME = "default"
+DEFAULT_LANGUAGE_CODE = "en"
 
 
 def _empty_custom_slots():
-    """Три независимых пустых словаря — важно, чтобы это не был один и
-    тот же объект в памяти (иначе правки одного слота задели бы все)."""
+    # Independent dicts — must not be the same object, or editing one
+    # slot would affect all three.
     return [
-        {"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "Выключено"}
+        {"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "off"}
         for _ in range(3)
     ]
 
 
 DEFAULT_CONFIG = {
     "api_key": "",
-    "selected_families": [],       # ключи семейств, отмеченных галочкой
-    "family_model_choice": {},     # {family_key: конкретный выбранный model_id}
-    "personas": {},                # {family_key: текст персонажа}
-    "reasoning_levels": {},        # {family_key: "Выключено"|"Низкий"|"Средний"|"Высокий"}
+    "selected_families": [],
+    "family_model_choice": {},     # {family_key: chosen model_id}
+    "personas": {},                # {family_key: persona text}
+    "reasoning_levels": {},        # {family_key: "off"|"low"|"medium"|"high"}
     "custom_models": _empty_custom_slots(),
-    "session_budget_usd": 0.5,     # лимит расходов на одну сессию, USD
-    "max_replies": 12,             # лимит числа реплик участников на сессию
-    "moderator_mode": "ai",        # "ai" или "human"
+    "session_budget_usd": 0.5,
+    "max_replies": 12,
+    "moderator_mode": "ai",        # "ai" or "human"
     "moderator_model": MODERATOR_DEFAULT_MODEL,
-    "user_participation": False,   # разрешить ведущему звать пользователя высказаться
-    "moderator_summary": False,    # отдельный вызов ведущего с тезисным итогом сессии
-    "debug_tab_enabled": False,    # показывать вкладку "Лог" в интерфейсе
-    "family_options_cache": {},    # {family_key: [id, id, ...]} — кэш списка моделей
-    "all_model_ids_cache": [],     # полный неотфильтрованный список ID — для кастомных слотов
-    "family_options_updated_at": "",  # когда кэш обновлялся последний раз
+    "user_participation": False,
+    "moderator_summary": False,
+    "family_options_cache": {},    # {family_key: [id, ...]}
+    "all_model_ids_cache": [],     # unfiltered, for custom-slot autocomplete
+    "family_options_updated_at": "",
 }
 
 
@@ -66,35 +67,56 @@ def _profile_path(name):
 
 
 def list_profiles():
-    """Возвращает отсортированный список имён существующих профилей.
-    Если профилей ещё нет ни одного, возвращает [DEFAULT_PROFILE_NAME]
-    (сам файл при этом появится только после первого save_profile)."""
     if not os.path.isdir(PROFILES_DIR):
         return [DEFAULT_PROFILE_NAME]
-    names = [
-        os.path.splitext(f)[0] for f in os.listdir(PROFILES_DIR)
-        if f.endswith(".json")
-    ]
+    names = [os.path.splitext(f)[0] for f in os.listdir(PROFILES_DIR) if f.endswith(".json")]
     return sorted(names) or [DEFAULT_PROFILE_NAME]
 
 
-def _read_pointer():
+def _read_pointer_data():
     if not os.path.exists(POINTER_PATH):
-        return DEFAULT_PROFILE_NAME
+        return {}
     try:
         with open(POINTER_PATH, "r", encoding="utf-8") as f:
-            return json.load(f).get("active_profile", DEFAULT_PROFILE_NAME)
+            return json.load(f)
     except (OSError, json.JSONDecodeError):
-        return DEFAULT_PROFILE_NAME
+        return {}
 
 
-def _write_pointer(name):
+def _write_pointer_data(data):
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(POINTER_PATH, "w", encoding="utf-8") as f:
-        json.dump({"active_profile": name}, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-_active_profile_name = DEFAULT_PROFILE_NAME  # обновляется load_config()/switch_active_profile()
+def _update_pointer(**changes):
+    """Merge `changes` into the pointer file without clobbering other keys."""
+    data = _read_pointer_data()
+    data.update(changes)
+    _write_pointer_data(data)
+
+
+def _read_pointer():
+    return _read_pointer_data().get("active_profile", DEFAULT_PROFILE_NAME)
+
+
+def get_language_code():
+    return _read_pointer_data().get("language", DEFAULT_LANGUAGE_CODE)
+
+
+def set_language_code(code):
+    _update_pointer(language=code)
+
+
+def get_debug_tab_enabled():
+    return bool(_read_pointer_data().get("debug_tab_enabled", False))
+
+
+def set_debug_tab_enabled(enabled):
+    _update_pointer(debug_tab_enabled=bool(enabled))
+
+
+_active_profile_name = DEFAULT_PROFILE_NAME  # kept in sync by load_config()/switch_active_profile()
 
 
 def get_active_profile_name():
@@ -102,34 +124,31 @@ def get_active_profile_name():
 
 
 def switch_active_profile(name):
-    """Помечает профиль активным (для последующих save_config без явного
-    имени) и запоминает выбор на будущие запуски."""
     global _active_profile_name
     _active_profile_name = name
-    _write_pointer(name)
+    _update_pointer(active_profile=name)
 
 
 def _normalize(data):
-    """Дополняет загруженный словарь недостающими ключами по умолчанию и
-    гарантирует ровно 3 кастомных слота (на случай файла от старой версии)."""
+    # Fill in defaults for missing keys, guarantee exactly 3 custom slots
+    # (handles files from older versions of the app).
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     merged.update(data)
 
     slots = merged.get("custom_models") or []
     slots = list(slots)[:3]
     while len(slots) < 3:
-        slots.append({"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "Выключено"})
+        slots.append({"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "off"})
     for slot in slots:
-        slot.setdefault("reasoning_level", "Выключено")
+        slot.setdefault("reasoning_level", "off")
     merged["custom_models"] = slots
 
     return merged
 
 
 def load_config(profile_name=None):
-    """Загружает профиль (по умолчанию — тот, что был активен в прошлый
-    раз, согласно файлу-указателю). Если профиль ещё не существует на
-    диске (самый первый запуск), создаёт его с настройками по умолчанию."""
+    """Loads a profile (defaults to whichever was last active). Creates
+    it with default settings if it doesn't exist yet (first run)."""
     name = profile_name or _read_pointer()
     path = _profile_path(name)
 
@@ -150,16 +169,14 @@ def load_config(profile_name=None):
 
 
 def save_profile(name, config):
-    """Сохраняет словарь настроек в конкретный именованный профиль,
-    не трогая указатель активного профиля."""
     os.makedirs(PROFILES_DIR, exist_ok=True)
     with open(_profile_path(name), "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
 def save_config(config, profile_name=None):
-    """Сохраняет в АКТИВНЫЙ профиль (или в указанный явно) — основной
-    метод сохранения, используемый большей частью приложения."""
+    """Saves to the active profile (or an explicit one) — the main save
+    entry point used throughout the app."""
     save_profile(profile_name or _active_profile_name, config)
 
 

@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-AI Brainstorm — десктопное приложение для группового брейншторма
-с несколькими AI-моделями через OpenRouter.
+AI Brainstorm — a desktop app for group brainstorming with several AI
+models via OpenRouter.
 
-Запуск:  python main.py
-Сборка в exe:  pyinstaller --onefile --windowed --name AIBrainstorm main.py
+Run:    python main.py
+Build:  pyinstaller --onefile --windowed --icon=favicon.ico --add-data "favicon.ico;." --name AIBrainstorm main.py
 
-Используется только стандартная библиотека Python — никаких pip install.
+Standard library only — no pip installs required.
 """
 
 import logging
@@ -24,37 +24,28 @@ from tkinter import ttk, scrolledtext, messagebox, filedialog, simpledialog
 
 from config import (
     load_config, save_config, save_profile, delete_profile,
-    list_profiles, get_active_profile_name, switch_active_profile, PROFILES_DIR,
+    list_profiles, get_active_profile_name, switch_active_profile, CONFIG_DIR,
+    get_language_code, set_language_code, get_debug_tab_enabled, set_debug_tab_enabled,
 )
 from models_catalog import (
-    FAMILIES, MODERATOR_DEFAULT_MODEL, REASONING_LEVEL_NAMES, DEFAULT_REASONING_LEVEL,
-    build_full_catalog, find_in_catalog, find_family, short_model_name,
+    FAMILIES, MODERATOR_DEFAULT_MODEL, REASONING_LEVEL_CODES, DEFAULT_REASONING_LEVEL,
+    reasoning_level_label, build_full_catalog, find_in_catalog, find_family, short_model_name,
 )
 from api_client import ask_model, ask_moderator, get_key_info, build_family_options, OpenRouterError
-
-# Поставьте False перед сборкой в продакшен-exe — уберёт подробный лог
-# в консоль (полезен только на этапе разработки). Это НЕЗАВИСИМО от
-# вкладки "Лог" в самом приложении (см. QueueLogHandler ниже) — та
-# включается/выключается пользователем в настройках, без правки кода.
-DEBUG = True
+import i18n
+from i18n import t
 
 logger = logging.getLogger("ai_brainstorm")
-logger.setLevel(logging.DEBUG)  # логгер генерирует всё; что из этого реально
-                                 # показывается — решает уровень КАЖДОГО обработчика
-logger.propagate = False  # не дублировать через root-логгер
-
-_console_handler = logging.StreamHandler()
-_console_handler.setLevel(logging.DEBUG if DEBUG else logging.WARNING)
-_console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-logger.addHandler(_console_handler)
+logger.setLevel(logging.DEBUG)
+logger.propagate = False
+# No console handler: all logging goes only to the optional "Log" tab
+# (see QueueLogHandler below), toggled by the user in Settings.
 
 
 class QueueLogHandler(logging.Handler):
-    """Прокидывает записи логов в очередь Tk-виджета вкладки "Лог" —
-    тот же паттерн потокобезопасной передачи, что и для чата (worker
-    может логировать из фонового потока, GUI обновляется через after()).
-    Уровень всегда DEBUG независимо от консольного DEBUG-флага выше —
-    вкладку явно включает пользователь в настройках, когда она нужна."""
+    """Routes log records to the "Log" tab's Tk widget via a queue —
+    same thread-safe handoff pattern used for chat messages (workers run
+    in a background thread, GUI updates happen via after())."""
 
     def __init__(self, ui_queue):
         super().__init__(level=logging.DEBUG)
@@ -79,13 +70,13 @@ OPENROUTER_REASONING_DOCS_URL = "https://openrouter.ai/docs/use-cases/reasoning-
 
 CODE_FENCE_RE = re.compile(r"```(?:\w+)?\n?(.*?)```", re.DOTALL)
 MD_INLINE_RE = re.compile(r"\*\*(.+?)\*\*|`([^`\n]+)`")
+_COST_MARKER = "\u2063"  # invisible separator; splits reply body from the cost line for styling
 
 
 
 def _sorted_with_current(values, current):
-    """Сортирует список значений по алфавиту, гарантируя, что текущее
-    выбранное значение тоже присутствует в списке (даже если кэш ещё не
-    содержит его — например, сразу после ручного ввода)."""
+    """Alphabetical list, guaranteeing `current` is included even if not
+    yet in the cache (e.g. right after manual entry)."""
     pool = set(values or [])
     if current:
         pool.add(current)
@@ -93,8 +84,7 @@ def _sorted_with_current(values, current):
 
 
 def _make_link_label(parent, text, url):
-    """Кликабельная 'ссылка' на базе tk.Label — открывает URL в браузере
-    по умолчанию через модуль webbrowser."""
+    """Clickable "link" built from tk.Label — opens `url` in the default browser."""
     link = tk.Label(
         parent, text=text, fg="#1565c0", cursor="hand2",
         font=("Segoe UI", 9, "underline"),
@@ -104,13 +94,10 @@ def _make_link_label(parent, text, url):
 
 
 def _open_folder(path):
-    """Открывает папку в системном файловом менеджере (Проводник на
-    Windows, Finder на macOS, обычно Nautilus/Dolphin/... на Linux).
-    Создаёт папку, если её ещё нет (например, до первого сохранения
-    профиля вручную)."""
+    """Opens `path` in the OS file manager, creating it first if needed."""
     os.makedirs(path, exist_ok=True)
     if sys.platform.startswith("win"):
-        os.startfile(path)  # noqa: доступно только на Windows, платформа проверена выше
+        os.startfile(path)
     elif sys.platform == "darwin":
         subprocess.Popen(["open", path])
     else:
@@ -118,18 +105,61 @@ def _open_folder(path):
 
 
 def _resource_path(relative_path):
-    """Резолвит путь к файлу-ресурсу (иконка и т.п.) так, чтобы работало
-    и при обычном запуске `python main.py`, и внутри exe, собранного
-    через `pyinstaller --onefile` — там все файлы распаковываются во
-    временную папку sys._MEIPASS, а не лежат рядом со скриптом."""
+    """Resolves a resource path (icon, etc.) so it works both when run
+    as `python main.py` and inside a PyInstaller --onefile exe, where
+    files are unpacked to sys._MEIPASS instead of living next to the script."""
     base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
 
 
+def _set_windows_taskbar_icon(hwnd, icon_path):
+    """
+    Applies the window icon directly via WinAPI (WM_SETICON), working
+    around tkinter.iconbitmap()'s tendency to use a single (small) frame
+    from a multi-size .ico everywhere — including places that expect a
+    large one (Alt+Tab, jump lists), producing a blurry stretched image.
+
+    Loads two frames explicitly (16x16 for ICON_SMALL, 256x256 for
+    ICON_BIG). Returns (hicon_small, hicon_big); keep a reference (see
+    self._windows_icons in App.__init__) so the handles aren't GC'd.
+    Windows-only — call only under sys.platform.startswith("win").
+    """
+    import ctypes
+
+    IMAGE_ICON = 1
+    LR_LOADFROMFILE = 0x00000010
+    WM_SETICON = 0x0080
+    ICON_SMALL = 0
+    ICON_BIG = 1
+
+    user32 = ctypes.windll.user32
+    # Explicit argtypes/restype are required on 64-bit Windows — without
+    # them ctypes assumes a 32-bit return and truncates pointers.
+    user32.LoadImageW.restype = ctypes.c_void_p
+    user32.LoadImageW.argtypes = [
+        ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+    ]
+    user32.SendMessageW.restype = ctypes.c_void_p
+    user32.SendMessageW.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+
+    hicon_small = user32.LoadImageW(None, icon_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+    hicon_big = user32.LoadImageW(None, icon_path, IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
+
+    if not hicon_small or not hicon_big:
+        raise ctypes.WinError()
+
+    user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+    user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+
+    return hicon_small, hicon_big
+
+
 class ScrollableFrame(ttk.Frame):
-    """Прокручиваемый контейнер (вертикально и горизонтально) для вкладки
-    настроек — контента там больше, чем помещается на экране FullHD без
-    скролла, особенно после разворачивания блоков моделей."""
+    """Vertically/horizontally scrollable container for the Settings tab —
+    there's more content than fits on a FullHD screen once model blocks expand."""
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -171,10 +201,7 @@ class ScrollableFrame(ttk.Frame):
 
 
 class LogTab(ttk.Frame):
-    """Вкладка технического лога — то же самое, что раньше было видно
-    только в консоли. Включается/выключается настройкой в SettingsTab,
-    полезно для диагностики без необходимости запускать программу из
-    терминала."""
+    """Technical log tab — enabled/disabled via a Settings checkbox."""
 
     def __init__(self, parent):
         super().__init__(parent, padding=8)
@@ -182,8 +209,8 @@ class LogTab(ttk.Frame):
 
         btn_row = ttk.Frame(self)
         btn_row.pack(fill="x", pady=(0, 6))
-        ttk.Button(btn_row, text="Копировать всё", command=self._copy_all).pack(side="left")
-        ttk.Button(btn_row, text="Очистить", command=self._clear).pack(side="left", padx=(6, 0))
+        ttk.Button(btn_row, text=t("copy_all_button"), command=self._copy_all).pack(side="left")
+        ttk.Button(btn_row, text=t("clear_button"), command=self._clear).pack(side="left", padx=(6, 0))
 
         self.log_text = scrolledtext.ScrolledText(
             self, wrap="word", state="disabled", font=("Consolas", 9)
@@ -236,7 +263,7 @@ class LogTab(ttk.Frame):
 
 
 class SettingsTab(ttk.Frame):
-    """Вкладка настроек: профиль, ключ, бюджет, ведущий, семейства моделей, кастомные модели."""
+    """Settings tab: profile, API key, budget, moderator, model families, custom models."""
 
     def __init__(self, parent, config, on_saved, on_profile_switched):
         super().__init__(parent)
@@ -244,18 +271,24 @@ class SettingsTab(ttk.Frame):
         self.on_saved = on_saved
         self.on_profile_switched = on_profile_switched
 
-        self.family_vars = {}          # key -> BooleanVar
-        self.family_combo_vars = {}    # key -> StringVar (выбранная конкретная модель)
-        self.family_combos = {}        # key -> ttk.Combobox (чтобы обновлять values)
-        self.persona_texts = {}        # key -> Text widget
-        self.reasoning_vars = {}       # key -> StringVar (уровень рассуждений семейства)
-        self.custom_slots = []         # список словарей виджетов для 3 кастомных слотов
+        self.family_vars = {}
+        self.family_combo_vars = {}
+        self.family_combos = {}
+        self.persona_texts = {}
+        self.reasoning_vars = {}       # key -> StringVar holding the LABEL (translated), not the code
+        self.custom_slots = []
+
+        # Reasoning-level combos show a translated label but must save a
+        # language-neutral code — build the label<->code mapping once.
+        self._reasoning_labels = [reasoning_level_label(c) for c in REASONING_LEVEL_CODES]
+        self._reasoning_label_to_code = {
+            reasoning_level_label(c): c for c in REASONING_LEVEL_CODES
+        }
 
         scrollable = ScrollableFrame(self)
         scrollable.pack(fill="both", expand=True)
         self.content = scrollable.inner
-        self.canvas = scrollable.canvas  # нужен, чтобы колесо мыши над Combobox/Spinbox
-                                          # прокручивало окно, а не меняло значение виджета
+        self.canvas = scrollable.canvas  # needed so wheel-over-combobox scrolls the page, not the value
 
         self._build_profile_block()
         self._build_api_key_block()
@@ -265,11 +298,9 @@ class SettingsTab(ttk.Frame):
         self._build_custom_models_block()
 
     def _protect_from_wheel(self, widget):
-        """Не даёт колесу мыши менять значение Combobox/Spinbox, если
-        курсор просто оказался над виджетом во время прокрутки окна —
-        частый и неприятный способ незаметно для себя сменить модель
-        или уровень рассуждений. Вместо изменения значения колесо
-        прокручивает саму страницу настроек, как и ожидается."""
+        """Mouse wheel over a Combobox/Spinbox scrolls the page instead
+        of silently changing its value — an easy way to accidentally
+        swap a model or reasoning level while scrolling past it."""
 
         def on_wheel(event):
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -284,19 +315,19 @@ class SettingsTab(ttk.Frame):
             return "break"
 
         widget.bind("<MouseWheel>", on_wheel)   # Windows/macOS
-        widget.bind("<Button-4>", on_button4)   # Linux, прокрутка вверх
-        widget.bind("<Button-5>", on_button5)   # Linux, прокрутка вниз
+        widget.bind("<Button-4>", on_button4)   # Linux, scroll up
+        widget.bind("<Button-5>", on_button5)   # Linux, scroll down
 
-    # ---------- Профили ----------
+    # ---------- Profile ----------
 
     def _build_profile_block(self):
-        frame = ttk.LabelFrame(self.content, text="Профиль настроек", padding=10)
+        frame = ttk.LabelFrame(self.content, text=t("profile_block_title"), padding=10)
         frame.pack(fill="x", pady=(0, 10))
 
         row = ttk.Frame(frame)
         row.pack(fill="x")
 
-        ttk.Label(row, text="Активный профиль:").pack(side="left")
+        ttk.Label(row, text=t("active_profile_label")).pack(side="left")
         self.profile_var = tk.StringVar(value=get_active_profile_name())
         self.profile_combo = ttk.Combobox(
             row, textvariable=self.profile_var, values=sorted(list_profiles()),
@@ -304,119 +335,131 @@ class SettingsTab(ttk.Frame):
         )
         self.profile_combo.pack(side="left", padx=(8, 0))
         self._protect_from_wheel(self.profile_combo)
+        self.profile_combo.bind("<<ComboboxSelected>>", self._load_selected_profile)
 
-        ttk.Button(row, text="Загрузить", command=self._load_selected_profile).pack(
+        ttk.Button(row, text=t("save_as_button"), command=self._save_as_new_profile).pack(
             side="left", padx=(10, 0)
         )
-        ttk.Button(row, text="Сохранить как…", command=self._save_as_new_profile).pack(
-            side="left", padx=(6, 0)
-        )
-        ttk.Button(row, text="Удалить", command=self._delete_selected_profile).pack(
+        ttk.Button(row, text=t("delete_button"), command=self._delete_selected_profile).pack(
             side="left", padx=(6, 0)
         )
         ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=(12, 12))
-        ttk.Button(row, text="Сохранить настройки", command=self._save).pack(side="left")
+        ttk.Button(row, text=t("save_settings_button"), command=self._save).pack(side="left")
 
         second_row = ttk.Frame(frame)
         second_row.pack(fill="x", pady=(6, 0))
         ttk.Button(
-            second_row, text="Открыть папку с профилями", command=self._open_profiles_folder
+            second_row, text=t("open_settings_folder_button"), command=self._open_settings_folder
         ).pack(side="left")
         ttk.Label(
-            second_row, text=f"({PROFILES_DIR})", foreground="#888888",
+            second_row, text=f"({CONFIG_DIR})", foreground="#888888",
             wraplength=800, justify="left",
         ).pack(side="left", padx=(8, 0))
 
         self.status_label = ttk.Label(frame, text="", foreground="#2e7d32")
         self.status_label.pack(anchor="w", pady=(4, 0))
 
-        self.debug_tab_var = tk.BooleanVar(
-            value=self.config_data.get("debug_tab_enabled", False)
+        lang_row = ttk.Frame(frame)
+        lang_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(lang_row, text=t("language_label")).pack(side="left")
+
+        self._languages = i18n.list_available_languages()
+        self._lang_name_to_code = {lang["name"]: lang["code"] for lang in self._languages}
+        current_code = i18n.get_current_language_code()
+        current_name = next(
+            (lang["name"] for lang in self._languages if lang["code"] == current_code),
+            current_code,
         )
+        self.language_var = tk.StringVar(value=current_name)
+        language_combo = ttk.Combobox(
+            lang_row, textvariable=self.language_var,
+            values=[lang["name"] for lang in self._languages],
+            width=20, state="readonly",
+        )
+        language_combo.pack(side="left", padx=(8, 0))
+        self._protect_from_wheel(language_combo)
+        language_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
+
+        self.debug_tab_var = tk.BooleanVar(value=get_debug_tab_enabled())
         ttk.Checkbutton(
             frame,
-            text="Показывать вкладку «Лог» (техническая информация о работе "
-                 "программы — то же самое, что раньше было видно только в консоли)",
+            text=t("show_log_tab_checkbox"),
             variable=self.debug_tab_var,
         ).pack(anchor="w", pady=(6, 0))
 
         ttk.Label(
-            frame,
-            text="Каждый профиль хранит СВОЙ API-ключ и все настройки отдельно — "
-                 "удобно, если у вас несколько аккаунтов OpenRouter или разные наборы "
-                 "участников под разные случаи. Кнопка «Сохранить настройки» справа "
-                 "пишет все правки формы ниже в текущий активный профиль.",
+            frame, text=t("profile_block_hint"),
             foreground="#555555", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(6, 0))
 
-    def _load_selected_profile(self):
+    def _on_language_selected(self, _event=None):
+        name = self.language_var.get()
+        code = self._lang_name_to_code.get(name)
+        if not code or code == i18n.get_current_language_code():
+            return
+        i18n.load_language(code)
+        set_language_code(code)
+        logger.info(t("log_language_switched", code=code))
+        self.on_profile_switched()  # generic "rebuild everything" callback
+
+    def _load_selected_profile(self, _event=None):
         name = self.profile_var.get()
         if name == get_active_profile_name():
-            messagebox.showinfo(APP_TITLE, f"Профиль «{name}» уже активен.")
             return
         loaded = load_config(profile_name=name)
         switch_active_profile(name)
         self.config_data.clear()
         self.config_data.update(loaded)
-        logger.info("Загружен профиль: %s", name)
+        logger.info(t("log_profile_loaded", name=name))
         self.on_profile_switched()
 
     def _save_as_new_profile(self):
         data = self._collect_form()
         if data is None:
-            return  # форма невалидна — сообщение уже показано внутри
+            return  # invalid form — warning already shown inside
 
-        name = simpledialog.askstring(
-            APP_TITLE, "Название нового профиля:", parent=self
-        )
+        name = simpledialog.askstring(APP_TITLE, t("new_profile_name_prompt"), parent=self)
         if not name:
             return
         name = name.strip()
         if not name:
             return
         if name in list_profiles():
-            if not messagebox.askyesno(
-                APP_TITLE, f"Профиль «{name}» уже существует. Перезаписать?"
-            ):
+            if not messagebox.askyesno(APP_TITLE, t("profile_exists_overwrite", name=name)):
                 return
 
-        # ВАЖНО: старый активный профиль на диске не трогаем вообще —
-        # значения формы применяются только к self.config_data в памяти
-        # и уходят исключительно в НОВЫЙ файл профиля.
+        # The OLD active profile on disk is left untouched — form values
+        # only get applied to self.config_data in memory and are written
+        # to the NEW profile file.
         self.config_data.update(data)
         save_profile(name, self.config_data)
         switch_active_profile(name)
         self.profile_combo["values"] = sorted(list_profiles())
         self.profile_var.set(name)
-        logger.info("Сохранён новый профиль: %s", name)
-        messagebox.showinfo(APP_TITLE, f"Сохранено как профиль «{name}» и сделано активным.")
+        logger.info(t("log_profile_saved_new", name=name))
+        messagebox.showinfo(APP_TITLE, t("profile_saved_and_active", name=name))
 
-    def _open_profiles_folder(self):
+    def _open_settings_folder(self):
         try:
-            _open_folder(PROFILES_DIR)
-            logger.info("Открыта папка профилей: %s", PROFILES_DIR)
+            _open_folder(CONFIG_DIR)
+            logger.info(t("log_settings_folder_opened", path=CONFIG_DIR))
         except Exception as e:
-            logger.error("Не удалось открыть папку профилей: %s", e)
-            messagebox.showerror(
-                APP_TITLE,
-                f"Не удалось открыть папку автоматически: {e}\n\nПуть: {PROFILES_DIR}",
-            )
+            logger.error(t("log_settings_folder_error", error=e))
+            messagebox.showerror(APP_TITLE, t("open_folder_failed", error=e, path=CONFIG_DIR))
 
     def _delete_selected_profile(self):
         name = self.profile_var.get()
         if len(list_profiles()) <= 1:
-            messagebox.showwarning(APP_TITLE, "Нельзя удалить последний оставшийся профиль.")
+            messagebox.showwarning(APP_TITLE, t("cannot_delete_last_profile"))
             return
-        if not messagebox.askyesno(
-            APP_TITLE, f"Удалить профиль «{name}» без возможности восстановления?"
-        ):
+        if not messagebox.askyesno(APP_TITLE, t("confirm_delete_profile", name=name)):
             return
 
         was_active = (name == get_active_profile_name())
         delete_profile(name)
         remaining = sorted(list_profiles())
         self.profile_combo["values"] = remaining
-        logger.info("Удалён профиль: %s", name)
+        logger.info(t("log_profile_deleted", name=name))
 
         if was_active:
             new_name = remaining[0]
@@ -429,10 +472,10 @@ class SettingsTab(ttk.Frame):
         else:
             self.profile_var.set(get_active_profile_name())
 
-    # ---------- API-ключ ----------
+    # ---------- API key ----------
 
     def _build_api_key_block(self):
-        frame = ttk.LabelFrame(self.content, text="API-ключ OpenRouter", padding=10)
+        frame = ttk.LabelFrame(self.content, text=t("api_key_block_title"), padding=10)
         frame.pack(fill="x", pady=(0, 10))
 
         self.api_key_var = tk.StringVar(value=self.config_data.get("api_key", ""))
@@ -445,16 +488,16 @@ class SettingsTab(ttk.Frame):
             entry.config(show="" if self.show_key_var.get() else "*")
 
         ttk.Checkbutton(
-            frame, text="показать", variable=self.show_key_var, command=toggle_show
+            frame, text=t("show_checkbox"), variable=self.show_key_var, command=toggle_show
         ).pack(side="left", padx=(8, 0))
 
         buttons_row = ttk.Frame(frame)
         buttons_row.pack(fill="x", pady=(8, 0))
         ttk.Button(
-            buttons_row, text="Проверить баланс ключа", command=self._check_key_balance
+            buttons_row, text=t("check_balance_button"), command=self._check_key_balance
         ).pack(side="left")
         ttk.Button(
-            buttons_row, text="Обновить список моделей", command=self._refresh_family_options
+            buttons_row, text=t("refresh_models_button"), command=self._refresh_family_options
         ).pack(side="left", padx=(10, 0))
 
         self.balance_label = ttk.Label(
@@ -468,26 +511,23 @@ class SettingsTab(ttk.Frame):
         )
         self.refresh_status_label.pack(anchor="w", pady=(2, 0))
         ttk.Label(
-            frame,
-            text="Обновление списка моделей затрагивает сразу семейства стандартных "
-                 "моделей, модель ведущего и\nподсказки для дополнительных (кастомных) "
-                 "моделей ниже — один клик на всё.",
+            frame, text=t("refresh_models_hint"),
             foreground="#555555", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(4, 0))
 
     def _check_key_balance(self):
         api_key = self.api_key_var.get().strip()
         if not api_key:
-            messagebox.showwarning(APP_TITLE, "Сначала введите API-ключ.")
+            messagebox.showwarning(APP_TITLE, t("enter_api_key_first"))
             return
-        self.balance_label.config(text="Проверяю…")
+        self.balance_label.config(text=t("checking_ellipsis"))
 
         def worker():
             try:
                 info = get_key_info(api_key)
             except OpenRouterError as e:
                 self.after(0, lambda: self.balance_label.config(
-                    text=f"Ошибка: {e}", foreground="#c62828"
+                    text=t("error_prefix", error=e), foreground="#c62828"
                 ))
                 return
 
@@ -495,24 +535,24 @@ class SettingsTab(ttk.Frame):
             limit = info.get("limit")
             remaining = info.get("limit_remaining")
 
-            usage_text = f"${usage:.4f}" if isinstance(usage, (int, float)) else "н/д"
+            usage_text = f"${usage:.4f}" if isinstance(usage, (int, float)) else t("not_available_abbr")
             if limit is None:
-                limit_text = "лимит на ключ не задан (смотрите общий баланс на openrouter.ai)"
+                limit_text = t("key_limit_not_set")
             else:
-                limit_text = f"лимит ключа ${limit:.2f}, остаток ${remaining:.4f}"
+                limit_text = t("key_limit_set", limit=f"{limit:.2f}", remaining=f"{remaining:.4f}")
 
-            text = f"Потрачено всего с ключа: {usage_text}  •  {limit_text}"
+            text = t("key_balance_text", usage=usage_text, limit_text=limit_text)
             self.after(0, lambda: self.balance_label.config(text=text, foreground="#555555"))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # ---------- Бюджет ----------
+    # ---------- Budget ----------
 
     def _build_budget_block(self):
-        frame = ttk.LabelFrame(self.content, text="Бюджет", padding=10)
+        frame = ttk.LabelFrame(self.content, text=t("budget_block_title"), padding=10)
         frame.pack(fill="x", pady=(0, 10))
 
-        ttk.Label(frame, text="Лимит расходов на одну сессию, $:").pack(side="left")
+        ttk.Label(frame, text=t("session_budget_label")).pack(side="left")
         self.budget_var = tk.StringVar(
             value=str(self.config_data.get("session_budget_usd", 0.5))
         )
@@ -520,17 +560,15 @@ class SettingsTab(ttk.Frame):
             side="left", padx=(6, 0)
         )
         ttk.Label(
-            frame,
-            text="— если суммарная стоимость реплик (включая вызовы ведущего) "
-                 "превысит лимит, обсуждение остановится автоматически.",
+            frame, text=t("session_budget_hint"),
             foreground="#555555",
             wraplength=420,
         ).pack(side="left", padx=(10, 0))
 
-    # ---------- Ведущий и участие ----------
+    # ---------- Moderator and participation ----------
 
     def _build_moderator_block(self):
-        frame = ttk.LabelFrame(self.content, text="Ведущий и участие", padding=10)
+        frame = ttk.LabelFrame(self.content, text=t("moderator_block_title"), padding=10)
         frame.pack(fill="x", pady=(0, 10))
 
         self.moderator_mode_var = tk.StringVar(
@@ -538,18 +576,18 @@ class SettingsTab(ttk.Frame):
         )
         mode_row = ttk.Frame(frame)
         mode_row.pack(fill="x")
-        ttk.Label(mode_row, text="Ведущий:").pack(side="left")
+        ttk.Label(mode_row, text=t("moderator_label")).pack(side="left")
         ttk.Radiobutton(
-            mode_row, text="ИИ (автоматически)", variable=self.moderator_mode_var, value="ai"
+            mode_row, text=t("moderator_mode_ai"), variable=self.moderator_mode_var, value="ai"
         ).pack(side="left", padx=(8, 0))
         ttk.Radiobutton(
-            mode_row, text="Человек (я сам выбираю каждый раз)",
+            mode_row, text=t("moderator_mode_human"),
             variable=self.moderator_mode_var, value="human",
         ).pack(side="left", padx=(8, 0))
 
         model_row = ttk.Frame(frame)
         model_row.pack(fill="x", pady=(8, 0))
-        ttk.Label(model_row, text="Модель ведущего (если ИИ):").pack(side="left")
+        ttk.Label(model_row, text=t("moderator_model_label")).pack(side="left")
         self.moderator_model_var = tk.StringVar(
             value=self.config_data.get("moderator_model", MODERATOR_DEFAULT_MODEL)
         )
@@ -565,31 +603,18 @@ class SettingsTab(ttk.Frame):
             value=self.config_data.get("user_participation", False)
         )
         ttk.Checkbutton(
-            frame,
-            text="Участвовать в беседе (ведущий сможет приглашать меня высказаться "
-                 "по своему усмотрению)",
-            variable=self.participation_var,
+            frame, text=t("participation_checkbox"), variable=self.participation_var,
         ).pack(anchor="w", pady=(8, 0))
 
         self.moderator_summary_var = tk.BooleanVar(
             value=self.config_data.get("moderator_summary", False)
         )
         ttk.Checkbutton(
-            frame,
-            text="Ведущий подводит итоги (отдельным сообщением после завершения сессии)",
-            variable=self.moderator_summary_var,
+            frame, text=t("moderator_summary_checkbox"), variable=self.moderator_summary_var,
         ).pack(anchor="w", pady=(4, 0))
 
         ttk.Label(
-            frame,
-            text="ИИ-ведущий скрыт из диалога и после каждой реплики решает, кто "
-                 "говорит следующим — это отдельный вызов модели, поэтому по умолчанию "
-                 "стоит самая дешёвая. Человек-ведущий — управление полностью у вас, "
-                 "без лишних затрат на оркестрацию; там же на вкладке «Чат» при каждом "
-                 "выборе оратора можно оставить комментарий или сразу завершить сессию. "
-                 "При ИИ-ведущем для этого служит отдельная кнопка «Вмешаться». Итог "
-                 "сессии (если включён) считается моделью ведущего в любом режиме и "
-                 "тоже расходует бюджет.",
+            frame, text=t("moderator_block_hint"),
             foreground="#555555", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(8, 0))
 
@@ -601,41 +626,29 @@ class SettingsTab(ttk.Frame):
         current = self.config_data.get("moderator_model", MODERATOR_DEFAULT_MODEL)
         return _sorted_with_current(all_ids, current)
 
-    # ---------- Стандартные модели (семейства) ----------
+    # ---------- Standard models (families) ----------
 
     def _cache_status_text(self):
         ts = self.config_data.get("family_options_updated_at", "")
-        return "список ещё не обновлялся из сети — доступны только модели по умолчанию" if not ts else f"обновлено: {ts}"
+        return t("cache_never_updated") if not ts else t("cache_updated_at", timestamp=ts)
 
     def _build_models_block(self):
         frame = ttk.LabelFrame(
             self.content,
-            text=f"Стандартные модели (до {MAX_STANDARD_MODELS}, выбор конкретной "
-                 f"модели внутри семейства)",
+            text=t("standard_models_title", max=MAX_STANDARD_MODELS),
             padding=10,
         )
         frame.pack(fill="both", expand=True, pady=(0, 10))
 
         ttk.Label(
-            frame,
-            text="Уровень рассуждений — необязательный бюджет токенов на скрытое "
-                 "размышление модели перед видимым ответом. По умолчанию выключено: "
-                 "для большинства тем брейншторма заметной пользы не даёт, а счёт "
-                 "может ощутимо вырасти. Не все модели поддерживают рассуждения — "
-                 "тогда настройка просто не даст эффекта. Подробнее:",
+            frame, text=t("reasoning_intro_hint"),
             foreground="#555555", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(0, 2))
         _make_link_label(frame, OPENROUTER_REASONING_DOCS_URL, OPENROUTER_REASONING_DOCS_URL).pack(
             anchor="w", pady=(0, 8)
         )
         ttk.Label(
-            frame,
-            text=(
-                "Ориентир по бюджету токенов на рассуждение: Низкий — до 1024 "
-                "(+20–40% к цене реплики), Средний — до 4096 (реплика может "
-                "подорожать в 2–3 раза), Высокий — до 16000 (существенный расход, "
-                "разумно включать точечно одному участнику, а не всем сразу)."
-            ),
+            frame, text=t("reasoning_budget_hint"),
             foreground="#555555", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(0, 10))
 
@@ -681,12 +694,11 @@ class SettingsTab(ttk.Frame):
 
             reasoning_frame = ttk.Frame(bottom_row)
             reasoning_frame.pack(side="left", padx=(12, 0), anchor="n")
-            ttk.Label(reasoning_frame, text="Рассуждения:").pack(anchor="w")
-            reasoning_var = tk.StringVar(
-                value=reasoning_levels.get(key, DEFAULT_REASONING_LEVEL)
-            )
+            ttk.Label(reasoning_frame, text=t("reasoning_label")).pack(anchor="w")
+            current_code = reasoning_levels.get(key, DEFAULT_REASONING_LEVEL)
+            reasoning_var = tk.StringVar(value=reasoning_level_label(current_code))
             reasoning_combo = ttk.Combobox(
-                reasoning_frame, textvariable=reasoning_var, values=REASONING_LEVEL_NAMES,
+                reasoning_frame, textvariable=reasoning_var, values=self._reasoning_labels,
                 width=12, state="readonly",
             )
             reasoning_combo.pack(anchor="w", pady=(2, 0))
@@ -695,16 +707,16 @@ class SettingsTab(ttk.Frame):
 
     def _refresh_family_options(self):
         api_key = self.api_key_var.get().strip()
-        self.refresh_status_label.config(text="Обновляю список моделей…")
-        logger.info("Запрошено обновление списка моделей по семействам")
+        self.refresh_status_label.config(text=t("refreshing_models_ellipsis"))
+        logger.info(t("log_refresh_models_requested"))
 
         def worker():
             try:
                 options, all_ids = build_family_options(api_key or None)
             except OpenRouterError as e:
-                logger.error("Не удалось обновить список моделей: %s", e)
+                logger.error(t("log_refresh_models_failed", error=e))
                 self.after(0, lambda: self.refresh_status_label.config(
-                    text=f"Ошибка обновления: {e}", foreground="#c62828"
+                    text=t("refresh_error", error=e), foreground="#c62828"
                 ))
                 return
             self.after(0, lambda: self._apply_family_options(options, all_ids))
@@ -732,27 +744,21 @@ class SettingsTab(ttk.Frame):
 
         counts = ", ".join(f"{find_family(k)['label']} {len(v)}" for k, v in options.items())
         self.refresh_status_label.config(
-            text=f"обновлено: {timestamp} ({counts}, всего моделей: {len(all_ids)})",
+            text=t("models_updated_status", timestamp=timestamp, counts=counts, total=len(all_ids)),
             foreground="#2e7d32",
         )
-        logger.info("Список моделей обновлён: %s (всего %d)", counts, len(all_ids))
+        logger.info(t("log_models_updated", counts=counts, total=len(all_ids)))
 
-    # ---------- Кастомные модели ----------
+    # ---------- Custom models ----------
 
     def _build_custom_models_block(self):
         frame = ttk.LabelFrame(
-            self.content, text=f"Дополнительные модели (до {MAX_CUSTOM_MODELS}, свои)", padding=10
+            self.content, text=t("custom_models_title", max=MAX_CUSTOM_MODELS), padding=10
         )
         frame.pack(fill="both", expand=True, pady=(0, 10))
 
         info = ttk.Label(
-            frame,
-            text=(
-                "ℹ Сюда можно добавить любую другую модель с OpenRouter — например, "
-                "DeepSeek или что угодно ещё из полного каталога. Укажите точный "
-                "ID модели (формат «провайдер/название», например "
-                "deepseek/deepseek-v4-flash-0731). Полный список моделей с ID:"
-            ),
+            frame, text=t("custom_models_info"),
             foreground="#555555", wraplength=1000, justify="left",
         )
         info.pack(anchor="w", pady=(0, 2))
@@ -773,10 +779,10 @@ class SettingsTab(ttk.Frame):
 
             enabled_var = tk.BooleanVar(value=slot_data.get("enabled", False))
             ttk.Checkbutton(
-                slot_frame, text=f"Слот {index + 1}: включить", variable=enabled_var
+                slot_frame, text=t("custom_slot_enable", n=index + 1), variable=enabled_var
             ).grid(row=0, column=0, columnspan=2, sticky="w")
 
-            ttk.Label(slot_frame, text="ID модели:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+            ttk.Label(slot_frame, text=t("model_id_label")).grid(row=1, column=0, sticky="w", pady=(4, 0))
             id_var = tk.StringVar(value=slot_data.get("id", ""))
             id_values = _sorted_with_current(all_ids_cache, id_var.get())
             id_combo = ttk.Combobox(
@@ -785,25 +791,24 @@ class SettingsTab(ttk.Frame):
             id_combo.grid(row=1, column=1, sticky="w", padx=(6, 16), pady=(4, 0))
             self._protect_from_wheel(id_combo)
 
-            ttk.Label(slot_frame, text="Название:").grid(row=1, column=2, sticky="w", pady=(4, 0))
+            ttk.Label(slot_frame, text=t("name_label")).grid(row=1, column=2, sticky="w", pady=(4, 0))
             label_var = tk.StringVar(value=slot_data.get("label", ""))
             ttk.Entry(slot_frame, textvariable=label_var, width=20).grid(
                 row=1, column=3, sticky="w", padx=(6, 0), pady=(4, 0)
             )
 
-            ttk.Label(slot_frame, text="Персонаж:").grid(row=2, column=0, sticky="nw", pady=(4, 0))
+            ttk.Label(slot_frame, text=t("persona_label")).grid(row=2, column=0, sticky="nw", pady=(4, 0))
             persona_text = tk.Text(slot_frame, height=2, width=46, wrap="word")
             persona_text.insert("1.0", slot_data.get("persona", ""))
             persona_text.grid(row=2, column=1, columnspan=2, sticky="w", padx=(6, 0), pady=(4, 0))
 
             reasoning_frame = ttk.Frame(slot_frame)
             reasoning_frame.grid(row=2, column=3, sticky="nw", padx=(6, 0), pady=(4, 0))
-            ttk.Label(reasoning_frame, text="Рассуждения:").pack(anchor="w")
-            reasoning_var = tk.StringVar(
-                value=slot_data.get("reasoning_level", DEFAULT_REASONING_LEVEL)
-            )
+            ttk.Label(reasoning_frame, text=t("reasoning_label")).pack(anchor="w")
+            slot_current_code = slot_data.get("reasoning_level", DEFAULT_REASONING_LEVEL)
+            reasoning_var = tk.StringVar(value=reasoning_level_label(slot_current_code))
             slot_reasoning_combo = ttk.Combobox(
-                reasoning_frame, textvariable=reasoning_var, values=REASONING_LEVEL_NAMES,
+                reasoning_frame, textvariable=reasoning_var, values=self._reasoning_labels,
                 width=12, state="readonly",
             )
             slot_reasoning_combo.pack(anchor="w", pady=(2, 0))
@@ -818,15 +823,14 @@ class SettingsTab(ttk.Frame):
                 "reasoning_var": reasoning_var,
             })
 
-    # ---------- Сохранение ----------
+    # ---------- Save ----------
 
     def _collect_form(self):
-        """Собирает и валидирует значения формы. Возвращает словарь с
-        данными при успехе, либо None (предупреждение уже показано
-        внутри). НИЧЕГО не пишет на диск и не трогает self.config_data —
-        это отдельная ответственность вызывающего кода (_save /
-        _save_as_new_profile), чтобы «Сохранить как…» не задевала
-        старый активный профиль."""
+        """Collects and validates form values. Returns a dict on success,
+        or None (a warning was already shown) — writes nothing to disk and
+        doesn't touch self.config_data itself (that's up to the caller:
+        _save / _save_as_new_profile, so "Save As" never touches the old
+        active profile)."""
         selected_families = [key for key, var in self.family_vars.items() if var.get()]
 
         family_model_choice = {}
@@ -835,7 +839,9 @@ class SettingsTab(ttk.Frame):
         for key in self.family_vars:
             family_model_choice[key] = self.family_combo_vars[key].get()
             personas[key] = self.persona_texts[key].get("1.0", "end").strip()
-            reasoning_levels[key] = self.reasoning_vars[key].get()
+            reasoning_levels[key] = self._reasoning_label_to_code.get(
+                self.reasoning_vars[key].get(), DEFAULT_REASONING_LEVEL
+            )
 
         seen_ids = {family_model_choice[k] for k in selected_families}
         custom_models = []
@@ -846,7 +852,9 @@ class SettingsTab(ttk.Frame):
             label = slot["label_var"].get().strip()
             persona = slot["persona_text"].get("1.0", "end").strip()
             enabled = slot["enabled_var"].get()
-            reasoning_level = slot["reasoning_var"].get()
+            reasoning_level = self._reasoning_label_to_code.get(
+                slot["reasoning_var"].get(), DEFAULT_REASONING_LEVEL
+            )
 
             custom_models.append({
                 "id": model_id, "label": label, "persona": persona,
@@ -856,32 +864,20 @@ class SettingsTab(ttk.Frame):
             if not enabled:
                 continue
             if not model_id:
-                messagebox.showwarning(
-                    APP_TITLE,
-                    f"Слот дополнительной модели №{index + 1} включён, но не указан "
-                    f"ID модели. Укажите ID или снимите галочку «включить».",
-                )
+                messagebox.showwarning(APP_TITLE, t("custom_slot_missing_id", n=index + 1))
                 return None
             if model_id in seen_ids:
-                messagebox.showwarning(
-                    APP_TITLE,
-                    f"Модель с ID «{model_id}» уже выбрана (повтор в слоте №{index + 1}). "
-                    f"Уберите дубликат.",
-                )
+                messagebox.showwarning(APP_TITLE, t("custom_slot_duplicate_id", id=model_id, n=index + 1))
                 return None
             seen_ids.add(model_id)
             custom_selected_ids.append(model_id)
 
         total_count = len(selected_families) + len(custom_selected_ids)
         if total_count < MIN_MODELS:
-            messagebox.showwarning(APP_TITLE, f"Выберите минимум {MIN_MODELS} моделей для брейншторма.")
+            messagebox.showwarning(APP_TITLE, t("min_models_warning", min=MIN_MODELS))
             return None
         if total_count > MAX_MODELS:
-            messagebox.showwarning(
-                APP_TITLE,
-                f"Максимум {MAX_MODELS} моделей одновременно — иначе сессия станет "
-                f"слишком дорогой и долгой.",
-            )
+            messagebox.showwarning(APP_TITLE, t("max_models_warning", max=MAX_MODELS))
             return None
 
         try:
@@ -889,7 +885,7 @@ class SettingsTab(ttk.Frame):
             if budget <= 0:
                 raise ValueError
         except ValueError:
-            messagebox.showwarning(APP_TITLE, "Лимит бюджета должен быть положительным числом, например 0.5")
+            messagebox.showwarning(APP_TITLE, t("invalid_budget_warning"))
             return None
 
         return {
@@ -904,7 +900,6 @@ class SettingsTab(ttk.Frame):
             "moderator_model": self.moderator_model_var.get(),
             "user_participation": self.participation_var.get(),
             "moderator_summary": self.moderator_summary_var.get(),
-            "debug_tab_enabled": self.debug_tab_var.get(),
         }
 
     def _save(self):
@@ -913,28 +908,29 @@ class SettingsTab(ttk.Frame):
             return
         self.config_data.update(data)
         save_config(self.config_data)
+        set_debug_tab_enabled(self.debug_tab_var.get())  # app-wide, not profile data
         logger.info(
-            "Настройки сохранены (профиль «%s»): участников=%d, ведущий=%s",
+            "Settings saved (profile %r): %d participants, moderator=%s",
             get_active_profile_name(),
             len(data["selected_families"]) + sum(1 for c in data["custom_models"] if c["enabled"]),
             data["moderator_mode"],
         )
-        self.status_label.config(text="Сохранено ✓")
+        self.status_label.config(text=t("saved_confirmation"))
         self.after(2000, lambda: self.status_label.config(text=""))
         self.on_saved()
 
 
 class ChatTab(ttk.Frame):
-    """Вкладка брейншторма: тема, ведущий, лог обсуждения, вмешательство."""
+    """Brainstorm tab: topic, moderator, discussion log, intervention."""
 
     def __init__(self, parent, config):
         super().__init__(parent, padding=12)
         self.config_data = config
         self.ui_queue = queue.Queue()
         self.worker_thread = None
-        self.export_log = []  # [(speaker_label, tag, raw_text), ...] — для честного экспорта в .md/.txt
+        self.export_log = []  # [(speaker_label, tag, raw_text), ...] — for honest .md/.txt export
 
-        # Флаги/примитивы для связи с фоновым потоком
+        # Flags/primitives for talking to the background worker thread
         self.intervene_requested = False
         self.abort_requested = False
         self._pending_event = None
@@ -945,12 +941,12 @@ class ChatTab(ttk.Frame):
         self._build_chat_log()
         self._poll_queue()
 
-    # ---------- Верхняя панель управления ----------
+    # ---------- Top control bar ----------
 
     def _build_controls(self):
         topic_frame = ttk.Frame(self)
         topic_frame.pack(fill="x", pady=(0, 6))
-        ttk.Label(topic_frame, text="Тема обсуждения:").pack(anchor="w")
+        ttk.Label(topic_frame, text=t("topic_label")).pack(anchor="w")
         self.topic_text = tk.Text(topic_frame, height=3, wrap="word")
         self.topic_text.pack(fill="x", pady=(2, 0))
         self.topic_text.bind("<Control-c>", lambda e: self._clipboard_op(self.topic_text, "<<Copy>>"))
@@ -961,26 +957,26 @@ class ChatTab(ttk.Frame):
         settings_row = ttk.Frame(self)
         settings_row.pack(fill="x", pady=(0, 6))
 
-        ttk.Label(settings_row, text="Макс. реплик:").pack(side="left")
+        ttk.Label(settings_row, text=t("max_replies_label")).pack(side="left")
         self.max_replies_var = tk.IntVar(value=self.config_data.get("max_replies", 12))
         ttk.Spinbox(
             settings_row, from_=2, to=40, textvariable=self.max_replies_var, width=4
         ).pack(side="left", padx=(4, 16))
 
         self.start_button = ttk.Button(
-            settings_row, text="Начать брейншторм", command=self._start_brainstorm
+            settings_row, text=t("start_brainstorm_button"), command=self._start_brainstorm
         )
         self.start_button.pack(side="left")
 
         self.intervene_button = ttk.Button(
-            settings_row, text="Вмешаться", command=self._intervene_clicked, state="disabled"
+            settings_row, text=t("intervene_button"), command=self._intervene_clicked, state="disabled"
         )
         self.intervene_button.pack(side="left", padx=(6, 0))
 
-        ttk.Button(settings_row, text="Экспорт…", command=self._export_clicked).pack(
+        ttk.Button(settings_row, text=t("export_button"), command=self._export_clicked).pack(
             side="left", padx=(6, 0)
         )
-        ttk.Button(settings_row, text="Копировать всё", command=self._copy_all_clicked).pack(
+        ttk.Button(settings_row, text=t("copy_all_button"), command=self._copy_all_clicked).pack(
             side="left", padx=(6, 0)
         )
 
@@ -991,11 +987,11 @@ class ChatTab(ttk.Frame):
         self.cost_var = tk.StringVar(value="")
         ttk.Label(status_row, textvariable=self.cost_var, foreground="#2e7d32").pack(side="right")
 
-    # ---------- Панель для вмешательства/выбора говорящего ----------
+    # ---------- Speaker-selection / intervention panel ----------
 
     def _build_input_panel(self):
         self.input_panel = ttk.Frame(self, padding=8, relief="ridge")
-        # Не паковится сразу — появляется только когда нужен ввод от пользователя.
+        # Not packed yet — shown only when user input is actually needed.
 
     def _show_input_panel(self, mode, payload=None):
         for widget in self.input_panel.winfo_children():
@@ -1003,18 +999,16 @@ class ChatTab(ttk.Frame):
 
         if mode == "choose_speaker":
             label_text = (
-                "Последняя реплика сессии — выберите, кто подведёт итог всего обсуждения:"
+                t("final_reply_choose_speaker")
                 if payload.get("is_final_reply")
-                else "Ваш ход как ведущего: кто говорит следующим?"
+                else t("your_turn_choose_speaker")
             )
             ttk.Label(self.input_panel, text=label_text).pack(anchor="w")
 
             comment_entry = tk.Text(self.input_panel, height=2, wrap="word")
             comment_entry.pack(fill="x", pady=(4, 4))
             ttk.Label(
-                self.input_panel,
-                text="Необязательный комментарий выше добавится в чат от вашего имени "
-                     "перед выбранной репликой.",
+                self.input_panel, text=t("optional_comment_hint"),
                 foreground="#888888",
             ).pack(anchor="w")
 
@@ -1031,49 +1025,42 @@ class ChatTab(ttk.Frame):
                 ).pack(side="left", padx=4, pady=2)
             if payload.get("allow_user"):
                 ttk.Button(
-                    btn_row, text="Я (высказаться)", command=lambda: choose("user")
+                    btn_row, text=t("speak_myself_button"), command=lambda: choose("user")
                 ).pack(side="left", padx=4, pady=2)
             ttk.Button(
-                btn_row, text="Завершить обсуждение",
+                btn_row, text=t("end_discussion_button"),
                 command=lambda: self._resolve_pending({"end": True}),
             ).pack(side="right", padx=4, pady=2)
 
         elif mode == "user_turn":
-            ttk.Label(
-                self.input_panel,
-                text="Ведущий передал слово вам — введите реплику или пропустите:",
-            ).pack(anchor="w")
+            ttk.Label(self.input_panel, text=t("moderator_passed_you_the_floor")).pack(anchor="w")
             entry = tk.Text(self.input_panel, height=3, wrap="word")
             entry.pack(fill="x", pady=4)
             btn_row = ttk.Frame(self.input_panel)
             btn_row.pack(fill="x")
             ttk.Button(
-                btn_row, text="Отправить",
+                btn_row, text=t("send_button"),
                 command=lambda: self._resolve_pending(entry.get("1.0", "end").strip() or None),
             ).pack(side="left", padx=4)
             ttk.Button(
-                btn_row, text="Пропустить", command=lambda: self._resolve_pending(None)
+                btn_row, text=t("skip_button"), command=lambda: self._resolve_pending(None)
             ).pack(side="left", padx=4)
             entry.focus_set()
 
         elif mode == "intervene":
-            ttk.Label(
-                self.input_panel,
-                text="Вмешательство: можно добавить уточнение для участников или "
-                     "завершить сессию прямо сейчас.",
-            ).pack(anchor="w")
+            ttk.Label(self.input_panel, text=t("intervene_hint")).pack(anchor="w")
             entry = tk.Text(self.input_panel, height=3, wrap="word")
             entry.pack(fill="x", pady=4)
             btn_row = ttk.Frame(self.input_panel)
             btn_row.pack(fill="x")
             ttk.Button(
-                btn_row, text="Продолжить с уточнением",
+                btn_row, text=t("continue_with_note_button"),
                 command=lambda: self._resolve_pending(
                     {"action": "continue", "text": entry.get("1.0", "end").strip()}
                 ),
             ).pack(side="left", padx=4)
             ttk.Button(
-                btn_row, text="Завершить сессию",
+                btn_row, text=t("end_session_button"),
                 command=lambda: self._resolve_pending({"action": "end"}),
             ).pack(side="left", padx=4)
             entry.focus_set()
@@ -1084,16 +1071,16 @@ class ChatTab(ttk.Frame):
         self.input_panel.pack_forget()
 
     def _resolve_pending(self, response):
-        """Вызывается из главного потока (клик по кнопке) — передаёт ответ
-        пользователя обратно в ждущий фоновый поток."""
+        """Called from the main thread (button click) — hands the user's
+        answer back to the waiting background thread."""
         self._pending_response = response
         if self._pending_event:
             self._pending_event.set()
         self._hide_input_panel()
 
     def _sync_ui_request(self, mode, payload=None):
-        """Вызывается ТОЛЬКО из фонового потока. Блокирует поток до тех
-        пор, пока пользователь не ответит через панель ввода."""
+        """Called ONLY from the background thread. Blocks until the user
+        responds via the input panel."""
         event = threading.Event()
         self._pending_event = event
         self._pending_response = None
@@ -1101,7 +1088,7 @@ class ChatTab(ttk.Frame):
         event.wait()
         return self._pending_response
 
-    # ---------- Лог чата ----------
+    # ---------- Chat log ----------
 
     def _build_chat_log(self):
         self.chat_log = scrolledtext.ScrolledText(
@@ -1116,6 +1103,9 @@ class ChatTab(ttk.Frame):
         self.chat_log.tag_config("separator", foreground="#cccccc")
         self.chat_log.tag_config("code", font=("Consolas", 9), background="#f0f0f0")
         self.chat_log.tag_config("bold", font=("Segoe UI", 10, "bold"))
+        self.chat_log.tag_config(
+            "cost_line", foreground="#888888", font=("Segoe UI", 9, "italic"), justify="right"
+        )
 
         self.chat_log.bind("<Control-c>", self._copy_selection)
         self.chat_log.bind("<Control-a>", self._select_all_log)
@@ -1130,8 +1120,8 @@ class ChatTab(ttk.Frame):
 
     @staticmethod
     def _clipboard_op(widget, virtual_event):
-        """Явно генерирует Copy/Cut/Paste — подстраховка на случай, если
-        платформенная сборка Tk не обрабатывает Ctrl+C/V/X по умолчанию."""
+        """Explicitly fires Copy/Cut/Paste — a fallback in case a given
+        Tk build doesn't handle Ctrl+C/V/X by default."""
         widget.event_generate(virtual_event)
         return "break"
 
@@ -1146,8 +1136,8 @@ class ChatTab(ttk.Frame):
             )
 
     def _insert_inline_formatted(self, text):
-        """Обрабатывает **жирный текст**, `инлайн-код`, заголовки (# ...) и
-        маркированные списки (- ...) внутри обычного (не блочного) текста."""
+        """Handles **bold**, `inline code`, headers (# ...) and bullet
+        lists (- ...) inside plain (non-fenced) text."""
         lines = text.split("\n")
         for i, line in enumerate(lines):
             stripped = line.lstrip()
@@ -1174,9 +1164,9 @@ class ChatTab(ttk.Frame):
                 self.chat_log.insert("end", "\n")
 
     def _insert_body_with_code(self, text):
-        """Вставляет текст реплики: ```блоки кода``` — моноширинным шрифтом
-        с фоном, остальное — с базовым Markdown-форматированием (полезно,
-        если тема касается кода или структурированных ответов)."""
+        """Renders a reply: ```code blocks``` in monospace with a
+        background, everything else with basic Markdown formatting
+        (useful when the topic involves code or structured replies)."""
         pos = 0
         for match in CODE_FENCE_RE.finditer(text):
             before = text[pos:match.start()]
@@ -1190,26 +1180,31 @@ class ChatTab(ttk.Frame):
             self._insert_inline_formatted(rest)
 
     def _append_log(self, speaker_label, tag, text):
-        self.export_log.append((speaker_label, tag, text))
+        self.export_log.append((speaker_label, tag, text.replace(_COST_MARKER, "\n\n")))
+
+        body, _sep, cost_line = text.partition(_COST_MARKER)
 
         self.chat_log.config(state="normal")
         self.chat_log.insert("end", f"{speaker_label}\n", (tag,))
-        self._insert_body_with_code(text)
-        self.chat_log.insert("end", "\n\n")
+        self._insert_body_with_code(body)
+        self.chat_log.insert("end", "\n")
+        if cost_line:
+            self.chat_log.insert("end", cost_line + "\n", ("cost_line",))
+        self.chat_log.insert("end", "\n")
         self.chat_log.insert("end", "─" * 70 + "\n\n", ("separator",))
         self.chat_log.config(state="disabled")
         self.chat_log.see("end")
 
-    # ---------- Экспорт / копирование ----------
+    # ---------- Export / copy ----------
 
     def _build_markdown_export(self):
-        """Собирает .md из СЫРЫХ сообщений (self.export_log), а не из
-        отрендеренного текста виджета — в виджете markdown-синтаксис уже
-        заменён на визуальные теги (жирный/код), поэтому экспорт из
-        него давал "голый" текст без разметки. Здесь же исходный текст
-        реплик (со всеми **, ``` и т.д., как их написала модель) просто
-        оборачивается в заголовки — так .md-файл открывается с
-        форматированием в любом markdown-редакторе/просмотрщике."""
+        """Builds .md from the RAW messages (self.export_log), not from
+        the widget's rendered text — the widget already replaces markdown
+        syntax with visual tags (bold/code), so exporting from it gave
+        "bare" text with no markup. Here the original reply text (with
+        every **, ```, etc. exactly as the model wrote it) is just
+        wrapped in headers — so the .md file opens with real formatting
+        in any markdown viewer/editor."""
         parts = []
         for speaker_label, tag, text in self.export_log:
             if tag == "user_note":
@@ -1225,8 +1220,8 @@ class ChatTab(ttk.Frame):
         return "\n\n---\n\n".join(parts) + "\n"
 
     def _build_plain_export(self):
-        """Простой .txt: те же сырые сообщения, без markdown-синтаксиса
-        (для людей, которым не нужен именно .md)."""
+        """Plain .txt: the same raw messages, no markdown syntax (for
+        people who don't specifically need .md)."""
         parts = []
         for speaker_label, _tag, text in self.export_log:
             parts.append(f"{speaker_label}\n{text}")
@@ -1234,12 +1229,12 @@ class ChatTab(ttk.Frame):
 
     def _export_clicked(self):
         if not self.export_log:
-            messagebox.showinfo(APP_TITLE, "Лог обсуждения пуст — экспортировать нечего.")
+            messagebox.showinfo(APP_TITLE, t("export_log_empty"))
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".md",
-            filetypes=[("Markdown", "*.md"), ("Текстовый файл", "*.txt"), ("Все файлы", "*.*")],
-            title="Сохранить лог обсуждения",
+            filetypes=[(t("markdown_filetype"), "*.md"), (t("text_filetype"), "*.txt"), (t("all_files_filetype"), "*.*")],
+            title=t("export_dialog_title"),
         )
         if not path:
             return
@@ -1251,23 +1246,23 @@ class ChatTab(ttk.Frame):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
         except OSError as e:
-            messagebox.showerror(APP_TITLE, f"Не удалось сохранить файл: {e}")
+            messagebox.showerror(APP_TITLE, t("save_file_failed", error=e))
             return
-        logger.info("Лог обсуждения экспортирован в %s", path)
-        self.status_var.set(f"Экспортировано в {path}")
+        logger.info(t("log_export_done", path=path))
+        self.status_var.set(t("exported_to", path=path))
 
     def _copy_all_clicked(self):
         content = self.chat_log.get("1.0", "end").strip()
         self.clipboard_clear()
         self.clipboard_append(content)
-        self.status_var.set("Весь лог скопирован в буфер обмена.")
+        self.status_var.set(t("log_copied_to_clipboard"))
 
-    # ---------- Запуск/остановка сессии ----------
+    # ---------- Start/stop session ----------
 
     def _intervene_clicked(self):
         self.intervene_requested = True
-        self.status_var.set("Запрошено вмешательство — сработает после текущей реплики…")
-        logger.info("Пользователь запросил вмешательство")
+        self.status_var.set(t("intervene_pending_status"))
+        logger.info(t("log_intervene_requested"))
 
     def _start_brainstorm(self):
         api_key = self.config_data.get("api_key", "")
@@ -1275,15 +1270,13 @@ class ChatTab(ttk.Frame):
         topic = self.topic_text.get("1.0", "end").strip()
 
         if not api_key:
-            messagebox.showwarning(APP_TITLE, "Сначала укажите API-ключ на вкладке «Настройки».")
+            messagebox.showwarning(APP_TITLE, t("set_api_key_first"))
             return
         if len(full_catalog) < MIN_MODELS:
-            messagebox.showwarning(
-                APP_TITLE, f"На вкладке «Настройки» выберите минимум {MIN_MODELS} моделей."
-            )
+            messagebox.showwarning(APP_TITLE, t("select_min_models_in_settings", min=MIN_MODELS))
             return
         if not topic:
-            messagebox.showwarning(APP_TITLE, "Введите тему обсуждения.")
+            messagebox.showwarning(APP_TITLE, t("enter_topic_warning"))
             return
 
         self.chat_log.config(state="normal")
@@ -1291,7 +1284,7 @@ class ChatTab(ttk.Frame):
         self.chat_log.config(state="disabled")
         self.export_log.clear()
         self._hide_input_panel()
-        self._append_log("Пользователь (тема)", "user_note", topic)
+        self._append_log(t("user_topic_label"), "user_note", topic)
 
         budget = float(self.config_data.get("session_budget_usd", 0.5))
         max_replies = self.max_replies_var.get()
@@ -1300,30 +1293,30 @@ class ChatTab(ttk.Frame):
         user_participation = self.config_data.get("user_participation", False)
         moderator_summary = self.config_data.get("moderator_summary", False)
 
-        # Сохраняем текущее значение "макс. реплик" в конфиг, чтобы оно
-        # подхватилось при следующем запуске (аналогично прочим настройкам).
+        # Persist the current "max replies" value so it's picked up next
+        # run too, same as other settings.
         self.config_data["max_replies"] = max_replies
         save_config(self.config_data)
 
         self._ensure_model_tags(full_catalog)
 
-        self.cost_var.set(f"Потрачено: $0.0000 из ${budget:.2f}")
-        self.status_var.set("Идёт обсуждение…")
+        self.cost_var.set(t("spent_status", spent="$0.0000", budget=f"{budget:.2f}"))
+        self.status_var.set(t("discussion_in_progress"))
         self.start_button.config(state="disabled")
         if moderator_mode == "human":
-            # В режиме человека-ведущего комментарий и завершение сессии уже
-            # встроены прямо в панель выбора следующего оратора — отдельная
-            # кнопка не нужна и только путала бы (два способа сделать одно).
+            # In human-moderator mode, the comment/end-session actions
+            # already live in the speaker-selection panel — a separate
+            # button would just be a confusing second way to do the same thing.
             self.intervene_button.config(state="disabled")
         else:
             self.intervene_button.config(state="normal")
         self.abort_requested = False
         self.intervene_requested = False
 
-        logger.info(
-            "Старт сессии: тема=%r, участников=%d, ведущий=%s, макс.реплик=%d, бюджет=$%.2f, итог=%s",
-            topic, len(full_catalog), moderator_mode, max_replies, budget, moderator_summary,
-        )
+        logger.info(t(
+            "log_session_started", topic=topic, count=len(full_catalog), mode=moderator_mode,
+            max_replies=max_replies, budget=f"{budget:.2f}", summary=moderator_summary,
+        ))
 
         self.worker_thread = threading.Thread(
             target=self._run_worker,
@@ -1335,15 +1328,15 @@ class ChatTab(ttk.Frame):
 
     def _run_worker(self, api_key, full_catalog, topic, max_replies, budget,
                      moderator_mode, moderator_model, user_participation, moderator_summary):
-        """Выполняется в фоновом потоке — не блокирует интерфейс."""
+        """Runs in the background thread — doesn't block the UI."""
         transcript_lines = []
         total_cost = 0.0
-        pending_moderator_cost = 0.0  # копится, показывается вместе со следующей видимой репликой
+        pending_moderator_cost = 0.0  # accumulates, shown together with the next visible reply
         replies_done = 0
         cost_unknown_calls = 0
         speak_counts = {p["id"]: 0 for p in full_catalog}
-        unavailable_until = {}  # model_id -> time.time(), до которого считаем модель недоступной
-        finish_reason = "Обсуждение завершено."
+        unavailable_until = {}  # model_id -> time.time() until which it's considered unavailable
+        finish_reason = t("discussion_finished")
 
         def is_available(model_id):
             until = unavailable_until.get(model_id)
@@ -1356,15 +1349,31 @@ class ChatTab(ttk.Frame):
             pool = pool or full_catalog
             return min(pool, key=lambda p: speak_counts[p["id"]])["id"]
 
+        just_invited_user = False  # prevents the moderator from inviting
+                                    # the user two turns in a row — user
+                                    # turns don't count toward replies_done,
+                                    # so without this the AI moderator could
+                                    # keep picking "user" forever with no
+                                    # natural stopping condition ever hit.
+        loop_guard = 0
+        loop_guard_limit = max(max_replies * 4, 40)  # absolute safety net:
+                                    # guarantees the loop terminates even
+                                    # under some other, unforeseen pathological
+                                    # moderator behavior.
+
         while True:
+            loop_guard += 1
+            if loop_guard > loop_guard_limit:
+                finish_reason = t("safety_loop_limit_reached")
+                break
             if total_cost >= budget:
-                finish_reason = f"Достигнут лимит бюджета сессии (${budget:.2f})."
+                finish_reason = t("budget_limit_reached", budget=f"{budget:.2f}")
                 break
             if replies_done >= max_replies:
-                finish_reason = f"Достигнут лимит числа реплик ({max_replies})."
+                finish_reason = t("reply_limit_reached", max_replies=max_replies)
                 break
             if self.abort_requested:
-                finish_reason = "Сессия завершена пользователем."
+                finish_reason = t("session_ended_by_user")
                 break
 
             if self.intervene_requested:
@@ -1375,22 +1384,20 @@ class ChatTab(ttk.Frame):
                     continue
                 clarification = (resp.get("text") or "").strip()
                 if clarification:
-                    transcript_lines.append(f"Пользователь (уточнение): {clarification}")
-                    self.ui_queue.put(("message", "Пользователь", "user_note", clarification))
+                    transcript_lines.append(t("user_clarification_transcript", text=clarification))
+                    self.ui_queue.put(("message", t("user_label"), "user_note", clarification))
                 continue
 
-            transcript = "\n".join(transcript_lines) if transcript_lines else "(обсуждение только начинается)"
+            transcript = "\n".join(transcript_lines) if transcript_lines else t("discussion_just_starting")
             available_participants = [p for p in full_catalog if is_available(p["id"])] or full_catalog
             is_final_reply = (replies_done == max_replies - 1)
 
-            # --- выбор следующего говорящего ---
+            # --- pick the next speaker ---
             task, reaction_type, wrap_up = "", "", False
 
             if moderator_mode == "human":
                 status_text = (
-                    "Последняя реплика сессии — выберите, кто подведёт итог…"
-                    if is_final_reply else
-                    "Ваш ход как ведущего — выберите участника…"
+                    t("final_reply_status_human") if is_final_reply else t("your_turn_status_human")
                 )
                 self.ui_queue.put(("status", status_text, None, None))
                 resp = self._sync_ui_request(
@@ -1409,24 +1416,25 @@ class ChatTab(ttk.Frame):
 
                 comment = (resp.get("comment") or "").strip()
                 if comment:
-                    transcript_lines.append(f"Пользователь (комментарий): {comment}")
-                    self.ui_queue.put(("message", "Пользователь", "user_note", comment))
+                    transcript_lines.append(t("user_comment_transcript", comment=comment))
+                    self.ui_queue.put(("message", t("user_label"), "user_note", comment))
 
                 next_id = resp.get("next")
                 if next_id is None:
                     continue
                 if is_final_reply:
-                    task = "Подведи итог всего обсуждения одной обобщающей репликой."
+                    task = t("final_summary_task")
                     wrap_up = True
             else:
-                self.ui_queue.put(("status", "Ведущий выбирает следующего участника…", None, None))
+                self.ui_queue.put(("status", t("moderator_choosing_status"), None, None))
+                effective_allow_user = user_participation and not just_invited_user
                 try:
                     decision, mod_usage = ask_moderator(
                         api_key, moderator_model, topic, transcript, available_participants,
-                        user_participation, replies_done, max_replies, is_final_reply,
+                        effective_allow_user, replies_done, max_replies, is_final_reply,
                     )
                 except OpenRouterError as e:
-                    logger.error("Ошибка вызова ведущего: %s", e)
+                    logger.error(t("log_moderator_error", error=e))
                     decision, mod_usage = {"next": None, "task": "", "reason": "", "reaction_type": "", "wrap_up": False}, {}
 
                 mod_cost = mod_usage.get("cost") if mod_usage else None
@@ -1440,50 +1448,48 @@ class ChatTab(ttk.Frame):
 
                 if next_id is None:
                     next_id = pick_fallback_speaker(available_participants)
-                    logger.info("Ведущий не дал валидный ответ, выбран запасной вариант: %s", next_id)
+                    logger.info(t("log_moderator_fallback", id=next_id))
 
-                # Гарантируем подведение итога на последней реплике даже
-                # если ведущий проигнорировал wrap_up в своём ответе —
-                # не полагаемся только на его послушность промпту.
+                # Guarantee a wrap-up on the last reply even if the
+                # moderator ignored wrap_up in its response — don't rely
+                # solely on it following the prompt.
                 if is_final_reply:
                     wrap_up = True
                     if not task:
-                        task = "Подведи итог всего обсуждения одной обобщающей репликой."
+                        task = t("final_summary_task")
 
             if next_id == "user":
-                self.ui_queue.put(("status", "Ведущий передал слово вам…", None, None))
+                just_invited_user = True
+                self.ui_queue.put(("status", t("moderator_passed_floor_status"), None, None))
                 user_reply = self._sync_ui_request("user_turn")
                 if user_reply:
-                    transcript_lines.append(f"Пользователь: {user_reply}")
-                    self.ui_queue.put(("message", "Пользователь", "user_note", user_reply))
-                continue  # реплика пользователя не считается к лимиту реплик/бюджету
+                    transcript_lines.append(t("user_reply_transcript", reply=user_reply))
+                    self.ui_queue.put(("message", t("user_label"), "user_note", user_reply))
+                continue  # user replies don't count toward the reply limit/budget
+
+            just_invited_user = False
 
             model_info = find_in_catalog(next_id, full_catalog)
             if model_info is None:
-                logger.warning("Ведущий выбрал неизвестную модель %s — пропускаю ход", next_id)
+                logger.warning(t("log_unknown_model_chosen", id=next_id))
                 continue
 
             label = model_info["label"]
             persona = model_info["persona"]
             reasoning_max_tokens = model_info.get("reasoning_max_tokens")
 
-            self.ui_queue.put(("status", f"{label} готовит ответ…", None, None))
+            self.ui_queue.put(("status", t("model_preparing_status", label=label), None, None))
 
             guidance = ""
             if task:
-                guidance += f"\nЗадача от ведущего: {task}"
+                guidance += t("moderator_task_guidance", task=task)
             if reaction_type:
-                guidance += f"\nОжидаемый тип реакции: {reaction_type}"
+                guidance += t("moderator_reaction_guidance", reaction_type=reaction_type)
             if wrap_up:
-                guidance += "\nОбсуждение близится к концу — дай более итоговую, подытоживающую реплику."
+                guidance += t("wrap_up_guidance")
 
-            user_prompt = (
-                f"Тема обсуждения: {topic}\n\n"
-                f"История обсуждения:\n{transcript}\n"
-                f"{guidance}\n\n"
-                f"Дай свою реплику по теме — по существу, 3-5 предложений, обязательно "
-                f"заверши мысль в пределах этого объёма (лучше короче, но закончено, "
-                f"чем оборвано на полуслове)."
+            user_prompt = t(
+                "participant_user_prompt", topic=topic, transcript=transcript, guidance=guidance,
             )
 
             try:
@@ -1492,11 +1498,11 @@ class ChatTab(ttk.Frame):
                     reasoning_max_tokens=reasoning_max_tokens,
                 )
             except OpenRouterError as e:
-                # Не спамим в чат — всё равно ведущий тут же выберет другого
-                # участника, а причина остаётся доступной во вкладке "Лог".
-                logger.warning("Модель %s временно недоступна: %s", next_id, e)
+                # Not shown in chat — the moderator will just pick someone
+                # else right away, and the reason stays visible in the "Log" tab.
+                logger.warning(t("log_model_unavailable", id=next_id, error=e))
                 mark_unavailable(next_id)
-                transcript_lines.append(f"{label}: (пропущен — временно недоступен)")
+                transcript_lines.append(t("transcript_skipped_unavailable", label=label))
                 continue
 
             cost = usage.get("cost")
@@ -1504,14 +1510,15 @@ class ChatTab(ttk.Frame):
                 total_cost += cost
                 if pending_moderator_cost > 0:
                     display_cost = cost + pending_moderator_cost
-                    cost_note = (
-                        f"\n\n(стоимость реплики: ${cost:.4f} + ведущий "
-                        f"${pending_moderator_cost:.4f} = ${display_cost:.4f})"
+                    cost_line = t(
+                        "cost_line_with_moderator",
+                        cost=f"{cost:.4f}", mod=f"{pending_moderator_cost:.4f}",
+                        total=f"{display_cost:.4f}",
                     )
                 else:
-                    cost_note = f"\n\n(стоимость реплики: ${cost:.4f})"
+                    cost_line = t("cost_line", cost=f"{cost:.4f}")
                 pending_moderator_cost = 0.0
-                reply_shown = f"{reply}{cost_note}"
+                reply_shown = f"{reply}{_COST_MARKER}{cost_line}"
             else:
                 cost_unknown_calls += 1
                 reply_shown = reply
@@ -1521,18 +1528,13 @@ class ChatTab(ttk.Frame):
 
             self.ui_queue.put(("message", label, next_id, reply_shown))
             self.ui_queue.put(("cost", f"${total_cost:.4f}", str(budget), None))
-            transcript_lines.append(f"{label}: {reply}")
+            transcript_lines.append(t("transcript_reply_line", label=label, reply=reply))
 
         if moderator_summary and transcript_lines:
-            self.ui_queue.put(("status", "Ведущий подводит итоги обсуждения…", None, None))
+            self.ui_queue.put(("status", t("status_moderator_summarizing"), None, None))
             transcript = "\n".join(transcript_lines)
-            summary_system = (
-                "Ты — ведущий группового брейншторма. Обсуждение завершено. "
-                "Составь краткий тезисный итог: ключевые идеи, точки согласия и "
-                "разногласий, и если уместно — общий вывод. Формат — маркированный "
-                "список, без вступлений и лишних слов."
-            )
-            summary_user = f"Тема: {topic}\n\nПолная история обсуждения:\n{transcript}"
+            summary_system = t("moderator_summary_system_prompt")
+            summary_user = t("moderator_summary_user_prompt", topic=topic, transcript=transcript)
             try:
                 summary_text, summary_usage = ask_model(
                     api_key, moderator_model, summary_system, summary_user,
@@ -1541,24 +1543,21 @@ class ChatTab(ttk.Frame):
                 summary_cost = summary_usage.get("cost")
                 if isinstance(summary_cost, (int, float)):
                     total_cost += summary_cost
-                    summary_text += f"\n\n(стоимость итога: ${summary_cost:.4f})"
+                    summary_text += f"{_COST_MARKER}{t('cost_line_summary', cost=f'{summary_cost:.4f}')}"
                 model_short = short_model_name(moderator_model)
                 self.ui_queue.put((
-                    "message", f"Итоги от ведущего ({model_short})", "summary", summary_text,
+                    "message", t("moderator_summary_label", model=model_short), "summary", summary_text,
                 ))
             except OpenRouterError as e:
-                logger.warning("Не удалось получить итог от ведущего: %s", e)
+                logger.warning(t("log_summary_failed", error=e))
 
         if cost_unknown_calls:
-            finish_reason += (
-                f" (для {cost_unknown_calls} реплик провайдер не вернул точную "
-                f"стоимость — реальный расход мог быть чуть выше)"
-            )
-        logger.info("Сессия завершена: %s Всего потрачено: $%.4f", finish_reason, total_cost)
+            finish_reason += t("unknown_cost_note", count=cost_unknown_calls)
+        logger.info(t("log_session_finished", reason=finish_reason, total=f"{total_cost:.4f}"))
         self.ui_queue.put(("finished", finish_reason, None, None))
 
     def _poll_queue(self):
-        """Периодически проверяет очередь сообщений из фонового потока."""
+        """Periodically checks the message queue from the background worker."""
         try:
             while True:
                 kind, label, tag, text = self.ui_queue.get_nowait()
@@ -1567,15 +1566,15 @@ class ChatTab(ttk.Frame):
                 elif kind == "message":
                     self._append_log(label, tag, text)
                 elif kind == "error":
-                    self._append_log(f"{label} (ошибка)", "error", text)
+                    self._append_log(t("error_speaker_suffix", label=label), "error", text)
                 elif kind == "cost":
                     spent, budget_str = label, tag
-                    self.cost_var.set(f"Потрачено: {spent} из ${float(budget_str):.2f}")
+                    self.cost_var.set(t("spent_status", spent=spent, budget=f"{float(budget_str):.2f}"))
                 elif kind == "ui_request":
                     self._show_input_panel(mode=label, payload=tag)
                 elif kind == "finished":
-                    self._append_log("Система", "system", label)
-                    self.status_var.set("Обсуждение завершено.")
+                    self._append_log(t("system_label"), "system", label)
+                    self.status_var.set(t("discussion_finished"))
                     self.start_button.config(state="normal")
                     self.intervene_button.config(state="disabled")
                     self._hide_input_panel()
@@ -1587,18 +1586,47 @@ class ChatTab(ttk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+
+        # Language must be loaded before ANY widget that calls t() is
+        # built — including LogTab below. Bootstraps locale files on
+        # first run, falls back to English if the saved code is missing
+        # (e.g. a custom language file was deleted), and persists that
+        # fallback so it's remembered next time.
+        saved_lang = get_language_code()
+        applied_lang = i18n.load_language(saved_lang)
+        language_fallback_happened = applied_lang != saved_lang
+        if language_fallback_happened:
+            set_language_code(applied_lang)
+
         self.title(APP_TITLE)
 
         icon_path = _resource_path("favicon.ico")
         if os.path.exists(icon_path):
             try:
-                # default=... выставляет иконку не только для этого окна,
-                # но и как иконку по умолчанию для всех последующих окон
-                # приложения (диалоги simpledialog и т.п.) — на Windows
-                # так же надёжнее ведёт себя таскбар, чем без default=.
+                # default=... applies the icon not just to this window but
+                # as the default for all subsequent app windows (e.g.
+                # simpledialog) — also more reliable for the Windows taskbar.
                 self.iconbitmap(default=icon_path)
             except tk.TclError as e:
-                logger.warning("Не удалось установить иконку окна: %s", e)
+                logger.warning("Could not set the window icon: %s", e)
+
+            if sys.platform.startswith("win"):
+                def _apply_taskbar_icon():
+                    self.update_idletasks()  # make sure the HWND actually exists yet
+                    try:
+                        # Keep a reference on self — handles aren't regular
+                        # Python objects, but hold on to them anyway for safety.
+                        self._windows_icons = _set_windows_taskbar_icon(
+                            self.winfo_id(), icon_path
+                        )
+                        logger.debug("WinAPI icon (16px/256px) applied to the window")
+                    except OSError as e:
+                        logger.warning("Could not apply the WinAPI icon: %s", e)
+
+                # after(...) on top of update_idletasks(): on some Windows/DWM
+                # builds the icon sticks better once the window has painted
+                # once, rather than sending WM_SETICON right at creation.
+                self.after(200, _apply_taskbar_icon)
 
         self.geometry("1060x780")
         self.minsize(900, 560)
@@ -1608,12 +1636,15 @@ class App(tk.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True)
 
-        # Вкладка "Лог" создаётся один раз и живёт всю сессию приложения
-        # (её просто показывают/прячут через notebook.add/forget) — так
-        # накопленный лог не теряется при переключении видимости.
+        # The "Log" tab is created once and lives for the whole app
+        # session (just shown/hidden via notebook.add/forget) — so
+        # accumulated log history isn't lost when toggling visibility.
         self.log_tab = LogTab(self.notebook)
         self._log_handler = QueueLogHandler(self.log_tab.ui_queue)
         logger.addHandler(self._log_handler)
+
+        if language_fallback_happened:
+            logger.info(t("log_language_fallback", saved=saved_lang, applied=applied_lang))
 
         self._build_tabs()
 
@@ -1625,8 +1656,8 @@ class App(tk.Tk):
             on_profile_switched=self._on_profile_switched,
         )
 
-        self.notebook.add(self.settings_tab, text="Настройки")
-        self.notebook.add(self.chat_tab, text="Чат")
+        self.notebook.add(self.settings_tab, text=t("tab_settings"))
+        self.notebook.add(self.chat_tab, text=t("tab_chat"))
 
         self._apply_debug_visibility()
 
@@ -1634,24 +1665,25 @@ class App(tk.Tk):
             self.notebook.select(self.settings_tab)
 
     def _apply_debug_visibility(self):
-        enabled = self.config_data.get("debug_tab_enabled", False)
+        enabled = get_debug_tab_enabled()
         is_shown = str(self.log_tab) in self.notebook.tabs()
         if enabled and not is_shown:
-            self.notebook.add(self.log_tab, text="Лог")
+            self.notebook.add(self.log_tab, text=t("tab_log"))
         elif not enabled and is_shown:
             self.notebook.forget(self.log_tab)
 
     def _on_settings_saved(self):
-        # Настройки хранятся в общем словаре self.config_data, который уже
-        # используется вкладкой чата — обновлять отдельно не нужно. Но
-        # видимость вкладки "Лог" могла измениться — применяем.
+        # Settings live in the shared self.config_data dict, already used
+        # by the chat tab — nothing else to sync. The "Log" tab's
+        # visibility may have changed, though — apply that.
         self._apply_debug_visibility()
 
     def _on_profile_switched(self):
-        """Вызывается SettingsTab после загрузки/удаления профиля — сам
-        словарь self.config_data уже заменён на данные нового профиля, но
-        существующие виджеты были построены под старые значения и сами
-        не обновятся. Проще и надёжнее — пересоздать вкладки заново."""
+        """Called by SettingsTab after loading/deleting a profile, OR
+        after switching the UI language — either way, self.config_data
+        (or i18n's active language) has already changed, but existing
+        widgets were built against the old values and won't update
+        themselves. Simplest and safest: rebuild the tabs from scratch."""
         self.notebook.forget(self.settings_tab)
         self.notebook.forget(self.chat_tab)
         if str(self.log_tab) in self.notebook.tabs():
