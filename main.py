@@ -157,6 +157,43 @@ def _set_windows_taskbar_icon(hwnd, icon_path):
     return hicon_small, hicon_big
 
 
+_WIN_VIRTUAL_KEYS = {"c": 0x43, "a": 0x41, "v": 0x56, "x": 0x58}
+
+
+def _make_hotkey_handler(actions):
+    """
+    Builds a <Control-Key> event handler that recognizes Ctrl+<letter>
+    regardless of the active keyboard layout.
+
+    A plain "<Control-c>"-style binding matches by *keysym* — what the
+    CURRENT layout produces for that physical key. On a non-Latin layout
+    (e.g. Russian), the physical C key reports an entirely different
+    keysym, so "<Control-c>" silently never fires — copy/paste/select-all
+    just stop working, with no error, depending on what layout happens
+    to be active. On Windows, the OS reports the same virtual-key code
+    for a physical key no matter the layout (that's why system shortcuts
+    work under any layout there) — Tkinter exposes this as
+    `event.keycode`, so we match on that on Windows. Elsewhere we fall
+    back to matching `event.keysym`, which covers the common case.
+
+    `actions` maps single letters ("c", "a", "v", "x") to callables.
+    """
+    is_windows = sys.platform.startswith("win")
+
+    def handler(event):
+        if is_windows:
+            for letter, vk in _WIN_VIRTUAL_KEYS.items():
+                if letter in actions and event.keycode == vk:
+                    return actions[letter](event)
+        else:
+            keysym = event.keysym.lower()
+            if keysym in actions:
+                return actions[keysym](event)
+        return None
+
+    return handler
+
+
 class ScrollableFrame(ttk.Frame):
     """Vertically/horizontally scrollable container for the Settings tab —
     there's more content than fits on a FullHD screen once model blocks expand."""
@@ -218,10 +255,10 @@ class LogTab(ttk.Frame):
         self.log_text.pack(fill="both", expand=True)
         self.log_text.tag_config("ERROR", foreground="#c62828")
         self.log_text.tag_config("WARNING", foreground="#e65100")
-        self.log_text.bind("<Control-c>", self._copy_selection)
-        self.log_text.bind("<Control-a>", self._select_all)
-        # A disabled Text widget doesn't reliably grab keyboard focus on
-        # click in Tkinter — without this, Ctrl+C/A silently go nowhere.
+        self.log_text.bind("<Control-Key>", _make_hotkey_handler({
+            "c": lambda e: self._copy_selection(),
+            "a": lambda e: self._select_all(),
+        }))
         self.log_text.bind("<Button-1>", lambda e: self.log_text.focus_set())
 
         self._poll_queue()
@@ -952,10 +989,12 @@ class ChatTab(ttk.Frame):
         ttk.Label(topic_frame, text=t("topic_label")).pack(anchor="w")
         self.topic_text = tk.Text(topic_frame, height=3, wrap="word")
         self.topic_text.pack(fill="x", pady=(2, 0))
-        self.topic_text.bind("<Control-c>", lambda e: self._clipboard_op(self.topic_text, "<<Copy>>"))
-        self.topic_text.bind("<Control-v>", lambda e: self._clipboard_op(self.topic_text, "<<Paste>>"))
-        self.topic_text.bind("<Control-x>", lambda e: self._clipboard_op(self.topic_text, "<<Cut>>"))
-        self.topic_text.bind("<Control-a>", self._select_all_topic)
+        self.topic_text.bind("<Control-Key>", _make_hotkey_handler({
+            "c": lambda e: self._clipboard_op(self.topic_text, "<<Copy>>"),
+            "v": lambda e: self._clipboard_op(self.topic_text, "<<Paste>>"),
+            "x": lambda e: self._clipboard_op(self.topic_text, "<<Cut>>"),
+            "a": lambda e: self._select_all_topic(),
+        }))
         self.topic_text.bind("<Button-1>", lambda e: self.topic_text.focus_set())
 
         settings_row = ttk.Frame(self)
@@ -1111,10 +1150,10 @@ class ChatTab(ttk.Frame):
             "cost_line", foreground="#888888", font=("Segoe UI", 9, "italic"), justify="right"
         )
 
-        self.chat_log.bind("<Control-c>", self._copy_selection)
-        self.chat_log.bind("<Control-a>", self._select_all_log)
-        # Same disabled-widget focus quirk as LogTab — click doesn't
-        # reliably grab keyboard focus without this, so Ctrl+C/A go nowhere.
+        self.chat_log.bind("<Control-Key>", _make_hotkey_handler({
+            "c": lambda e: self._copy_selection(),
+            "a": lambda e: self._select_all_log(),
+        }))
         self.chat_log.bind("<Button-1>", lambda e: self.chat_log.focus_set())
 
     def _copy_selection(self, _event=None):
