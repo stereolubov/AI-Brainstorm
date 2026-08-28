@@ -26,6 +26,7 @@ from config import (
     load_config, save_config, save_profile, delete_profile,
     list_profiles, get_active_profile_name, switch_active_profile, CONFIG_DIR,
     get_language_code, set_language_code, get_debug_tab_enabled, set_debug_tab_enabled,
+    get_theme_code, set_theme_code,
 )
 from models_catalog import (
     FAMILIES, MODERATOR_DEFAULT_MODEL, REASONING_LEVEL_CODES, DEFAULT_REASONING_LEVEL,
@@ -34,6 +35,7 @@ from models_catalog import (
 from api_client import ask_model, ask_moderator, get_key_info, build_family_options, OpenRouterError
 import i18n
 from i18n import t
+import theme
 
 logger = logging.getLogger("ai_brainstorm")
 logger.setLevel(logging.DEBUG)
@@ -201,6 +203,7 @@ class ScrollableFrame(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        theme.apply_canvas_theme(self.canvas, get_theme_code())
         vscroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         hscroll = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
 
@@ -253,6 +256,7 @@ class LogTab(ttk.Frame):
             self, wrap="word", state="disabled", font=("Consolas", 9)
         )
         self.log_text.pack(fill="both", expand=True)
+        theme.apply_text_widget_theme(self.log_text, get_theme_code())
         self.log_text.tag_config("ERROR", foreground="#c62828")
         self.log_text.tag_config("WARNING", foreground="#e65100")
         self.log_text.bind("<Control-Key>", _make_hotkey_handler({
@@ -392,7 +396,7 @@ class SettingsTab(ttk.Frame):
             second_row, text=t("open_settings_folder_button"), command=self._open_settings_folder
         ).pack(side="left")
         ttk.Label(
-            second_row, text=f"({CONFIG_DIR})", foreground="#888888",
+            second_row, text=f"({CONFIG_DIR})", foreground=theme.get_palette(get_theme_code())["muted_fg"],
             wraplength=800, justify="left",
         ).pack(side="left", padx=(8, 0))
 
@@ -420,6 +424,25 @@ class SettingsTab(ttk.Frame):
         self._protect_from_wheel(language_combo)
         language_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
 
+        ttk.Label(lang_row, text=t("theme_label")).pack(side="left", padx=(16, 0))
+        self._theme_name_to_code = {
+            t("theme_light"): "light",
+            t("theme_dark"): "dark",
+        }
+        theme_names_by_code = {v: k for k, v in self._theme_name_to_code.items()}
+        current_theme_code = get_theme_code()
+        self.theme_var = tk.StringVar(
+            value=theme_names_by_code.get(current_theme_code, t("theme_light"))
+        )
+        theme_combo = ttk.Combobox(
+            lang_row, textvariable=self.theme_var,
+            values=[t("theme_light"), t("theme_dark")],
+            width=12, state="readonly",
+        )
+        theme_combo.pack(side="left", padx=(8, 0))
+        self._protect_from_wheel(theme_combo)
+        theme_combo.bind("<<ComboboxSelected>>", self._on_theme_selected)
+
         self.debug_tab_var = tk.BooleanVar(value=get_debug_tab_enabled())
         ttk.Checkbutton(
             frame,
@@ -429,7 +452,7 @@ class SettingsTab(ttk.Frame):
 
         ttk.Label(
             frame, text=t("profile_block_hint"),
-            foreground="#555555", wraplength=1000, justify="left",
+            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(6, 0))
 
     def _on_language_selected(self, _event=None):
@@ -441,6 +464,16 @@ class SettingsTab(ttk.Frame):
         set_language_code(code)
         logger.info(t("log_language_switched", code=code))
         self.on_profile_switched()  # generic "rebuild everything" callback
+
+    def _on_theme_selected(self, _event=None):
+        name = self.theme_var.get()
+        code = self._theme_name_to_code.get(name)
+        if not code or code == get_theme_code():
+            return
+        theme.apply_theme(self, code)
+        set_theme_code(code)
+        logger.info(t("log_theme_switched", code=code))
+        self.on_profile_switched()  # rebuilds tabs so plain tk.Text widgets re-theme too
 
     def _load_selected_profile(self, _event=None):
         name = self.profile_var.get()
@@ -541,18 +574,18 @@ class SettingsTab(ttk.Frame):
         ).pack(side="left", padx=(10, 0))
 
         self.balance_label = ttk.Label(
-            frame, text="", foreground="#555555", wraplength=1000, justify="left"
+            frame, text="", foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left"
         )
         self.balance_label.pack(anchor="w", pady=(6, 0))
 
         self.refresh_status_label = ttk.Label(
-            frame, text=self._cache_status_text(), foreground="#555555",
+            frame, text=self._cache_status_text(), foreground=theme.get_palette(get_theme_code())["muted_fg"],
             wraplength=1000, justify="left",
         )
         self.refresh_status_label.pack(anchor="w", pady=(2, 0))
         ttk.Label(
             frame, text=t("refresh_models_hint"),
-            foreground="#555555", wraplength=1000, justify="left",
+            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(4, 0))
 
     def _check_key_balance(self):
@@ -582,7 +615,7 @@ class SettingsTab(ttk.Frame):
                 limit_text = t("key_limit_set", limit=f"{limit:.2f}", remaining=f"{remaining:.4f}")
 
             text = t("key_balance_text", usage=usage_text, limit_text=limit_text)
-            self.after(0, lambda: self.balance_label.config(text=text, foreground="#555555"))
+            self.after(0, lambda: self.balance_label.config(text=text, foreground=theme.get_palette(get_theme_code())["muted_fg"]))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -601,7 +634,7 @@ class SettingsTab(ttk.Frame):
         )
         ttk.Label(
             frame, text=t("session_budget_hint"),
-            foreground="#555555",
+            foreground=theme.get_palette(get_theme_code())["muted_fg"],
             wraplength=420,
         ).pack(side="left", padx=(10, 0))
 
@@ -655,7 +688,7 @@ class SettingsTab(ttk.Frame):
 
         ttk.Label(
             frame, text=t("moderator_block_hint"),
-            foreground="#555555", wraplength=1000, justify="left",
+            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(8, 0))
 
     def _all_known_model_ids(self):
@@ -682,14 +715,14 @@ class SettingsTab(ttk.Frame):
 
         ttk.Label(
             frame, text=t("reasoning_intro_hint"),
-            foreground="#555555", wraplength=1000, justify="left",
+            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(0, 2))
         _make_link_label(frame, OPENROUTER_REASONING_DOCS_URL, OPENROUTER_REASONING_DOCS_URL).pack(
             anchor="w", pady=(0, 8)
         )
         ttk.Label(
             frame, text=t("reasoning_budget_hint"),
-            foreground="#555555", wraplength=1000, justify="left",
+            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(0, 10))
 
         selected = set(self.config_data.get("selected_families", []))
@@ -730,6 +763,7 @@ class SettingsTab(ttk.Frame):
             text_widget = tk.Text(bottom_row, height=2, width=60, wrap="word")
             text_widget.insert("1.0", persona_value)
             text_widget.pack(side="left")
+            theme.apply_text_widget_theme(text_widget, get_theme_code())
             self.persona_texts[key] = text_widget
 
             reasoning_frame = ttk.Frame(bottom_row)
@@ -799,7 +833,7 @@ class SettingsTab(ttk.Frame):
 
         info = ttk.Label(
             frame, text=t("custom_models_info"),
-            foreground="#555555", wraplength=1000, justify="left",
+            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         )
         info.pack(anchor="w", pady=(0, 2))
         _make_link_label(frame, OPENROUTER_MODELS_URL, OPENROUTER_MODELS_URL).pack(
@@ -841,6 +875,7 @@ class SettingsTab(ttk.Frame):
             persona_text = tk.Text(slot_frame, height=2, width=46, wrap="word")
             persona_text.insert("1.0", slot_data.get("persona", ""))
             persona_text.grid(row=2, column=1, columnspan=2, sticky="w", padx=(6, 0), pady=(4, 0))
+            theme.apply_text_widget_theme(persona_text, get_theme_code())
 
             reasoning_frame = ttk.Frame(slot_frame)
             reasoning_frame.grid(row=2, column=3, sticky="nw", padx=(6, 0), pady=(4, 0))
@@ -989,6 +1024,7 @@ class ChatTab(ttk.Frame):
         ttk.Label(topic_frame, text=t("topic_label")).pack(anchor="w")
         self.topic_text = tk.Text(topic_frame, height=3, wrap="word")
         self.topic_text.pack(fill="x", pady=(2, 0))
+        theme.apply_text_widget_theme(self.topic_text, get_theme_code())
         self.topic_text.bind("<Control-Key>", _make_hotkey_handler({
             "c": lambda e: self._clipboard_op(self.topic_text, "<<Copy>>"),
             "v": lambda e: self._clipboard_op(self.topic_text, "<<Paste>>"),
@@ -1026,7 +1062,7 @@ class ChatTab(ttk.Frame):
         status_row = ttk.Frame(self)
         status_row.pack(fill="x")
         self.status_var = tk.StringVar(value="")
-        ttk.Label(status_row, textvariable=self.status_var, foreground="#555555").pack(side="left")
+        ttk.Label(status_row, textvariable=self.status_var, foreground=theme.get_palette(get_theme_code())["muted_fg"]).pack(side="left")
         self.cost_var = tk.StringVar(value="")
         ttk.Label(status_row, textvariable=self.cost_var, foreground="#2e7d32").pack(side="right")
 
@@ -1050,9 +1086,10 @@ class ChatTab(ttk.Frame):
 
             comment_entry = tk.Text(self.input_panel, height=2, wrap="word")
             comment_entry.pack(fill="x", pady=(4, 4))
+            theme.apply_text_widget_theme(comment_entry, get_theme_code())
             ttk.Label(
                 self.input_panel, text=t("optional_comment_hint"),
-                foreground="#888888",
+                foreground=theme.get_palette(get_theme_code())["muted_fg"],
             ).pack(anchor="w")
 
             def choose(pid):
@@ -1079,6 +1116,7 @@ class ChatTab(ttk.Frame):
             ttk.Label(self.input_panel, text=t("moderator_passed_you_the_floor")).pack(anchor="w")
             entry = tk.Text(self.input_panel, height=3, wrap="word")
             entry.pack(fill="x", pady=4)
+            theme.apply_text_widget_theme(entry, get_theme_code())
             btn_row = ttk.Frame(self.input_panel)
             btn_row.pack(fill="x")
             ttk.Button(
@@ -1094,6 +1132,7 @@ class ChatTab(ttk.Frame):
             ttk.Label(self.input_panel, text=t("intervene_hint")).pack(anchor="w")
             entry = tk.Text(self.input_panel, height=3, wrap="word")
             entry.pack(fill="x", pady=4)
+            theme.apply_text_widget_theme(entry, get_theme_code())
             btn_row = ttk.Frame(self.input_panel)
             btn_row.pack(fill="x")
             ttk.Button(
@@ -1138,16 +1177,18 @@ class ChatTab(ttk.Frame):
             self, wrap="word", state="disabled", font=("Segoe UI", 10)
         )
         self.chat_log.pack(fill="both", expand=True)
+        theme.apply_text_widget_theme(self.chat_log, get_theme_code())
 
-        self.chat_log.tag_config("system", foreground="#888888")
+        tag_colors = theme.theme_tag_colors(get_theme_code())
+        self.chat_log.tag_config("system", foreground=tag_colors["muted_fg"])
         self.chat_log.tag_config("error", foreground="#c62828")
         self.chat_log.tag_config("user_note", foreground="#1565c0", font=("Segoe UI", 10, "bold"))
         self.chat_log.tag_config("summary", foreground="#2e7d32", font=("Segoe UI", 10, "bold"))
-        self.chat_log.tag_config("separator", foreground="#cccccc")
-        self.chat_log.tag_config("code", font=("Consolas", 9), background="#f0f0f0")
+        self.chat_log.tag_config("separator", foreground=tag_colors["separator"])
+        self.chat_log.tag_config("code", font=("Consolas", 9), background=tag_colors["code_bg"])
         self.chat_log.tag_config("bold", font=("Segoe UI", 10, "bold"))
         self.chat_log.tag_config(
-            "cost_line", foreground="#888888", font=("Segoe UI", 9, "italic"), justify="right"
+            "cost_line", foreground=tag_colors["muted_fg"], font=("Segoe UI", 9, "italic"), justify="right"
         )
 
         self.chat_log.bind("<Control-Key>", _make_hotkey_handler({
@@ -1644,6 +1685,11 @@ class App(tk.Tk):
         if language_fallback_happened:
             set_language_code(applied_lang)
 
+        # Theme must also be applied before any widgets are built —
+        # ttk.Style() is global, so this colors every ttk widget created
+        # from this point on automatically.
+        theme.apply_theme(self, get_theme_code())
+
         self.title(APP_TITLE)
 
         icon_path = _resource_path("favicon.ico")
@@ -1725,17 +1771,24 @@ class App(tk.Tk):
         self._apply_debug_visibility()
 
     def _on_profile_switched(self):
-        """Called by SettingsTab after loading/deleting a profile, OR
-        after switching the UI language — either way, self.config_data
-        (or i18n's active language) has already changed, but existing
-        widgets were built against the old values and won't update
-        themselves. Simplest and safest: rebuild the tabs from scratch."""
+        """Called by SettingsTab after loading/deleting a profile, or
+        after switching the UI language or theme — either way,
+        self.config_data (or i18n's/theme's active state) has already
+        changed, but existing widgets were built against the old values
+        and won't update themselves. Simplest and safest: rebuild the
+        tabs from scratch."""
         self.notebook.forget(self.settings_tab)
         self.notebook.forget(self.chat_tab)
         if str(self.log_tab) in self.notebook.tabs():
             self.notebook.forget(self.log_tab)
         self.settings_tab.destroy()
         self.chat_tab.destroy()
+
+        # LogTab is a singleton (kept alive across rebuilds to preserve
+        # its history), so it isn't recreated above — its plain tk.Text
+        # widget needs an explicit recolor if the theme just changed.
+        theme.apply_text_widget_theme(self.log_tab.log_text, get_theme_code())
+
         self._build_tabs()
 
 

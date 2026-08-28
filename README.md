@@ -61,6 +61,15 @@ silently falls back to English and remembers that.
 Switch languages from the dropdown on the Settings tab — it applies
 immediately, rebuilding the interface in place.
 
+## Theme
+
+Light and Dark, switched from a dropdown right next to the language
+selector on the Settings tab. Applies immediately, no restart needed.
+Like the language, it's an app-wide setting stored in
+`~/.ai_brainstorm/active_profile.json`, independent of which profile is
+active. Participant/accent colors (Claude orange, error red, etc.) stay
+the same in both themes on purpose — they're brand colors, not chrome.
+
 ## Profiles
 
 Settings live in named profiles, each a standalone JSON file with its
@@ -178,6 +187,7 @@ ai_brainstorm/
 ├── models_catalog.py    — model families, reasoning levels, catalog assembly
 ├── api_client.py        — OpenRouter calls: chat, moderator, model list, key balance
 ├── i18n.py               — translation loading/fallback, built-in RU/EN dictionaries
+├── theme.py               — Light/Dark palettes, ttk.Style() + plain Text/Canvas theming
 ├── favicon.ico           — app icon (optional, add your own)
 ├── README.md / README.ru.md
 ```
@@ -187,4 +197,5 @@ ai_brainstorm/
 - **2026-08-23** — First release.
 - **2026-08-24** — Added localization (multi-language interface, prompts,
   and log) and various logic bug fixes.
+- **2026-08-29** — Added a Light/Dark theme.
 

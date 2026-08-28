@@ -116,6 +116,14 @@ def set_debug_tab_enabled(enabled):
     _update_pointer(debug_tab_enabled=bool(enabled))
 
 
+def get_theme_code():
+    return _read_pointer_data().get("theme", "light")
+
+
+def set_theme_code(code):
+    _update_pointer(theme=code)
+
+
 _active_profile_name = DEFAULT_PROFILE_NAME  # kept in sync by load_config()/switch_active_profile()
 
 

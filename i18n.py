@@ -46,24 +46,39 @@ def _is_valid_locale_data(data):
 
 
 def _ensure_builtin_files():
-    """Create Russian.json/English.json if missing or corrupted. Other
-    (custom) language files are left alone — not our responsibility."""
+    """Create Russian.json/English.json if missing or corrupted, and
+    self-heal them if they're valid but missing keys that got added to
+    the app in a later update (existing/edited keys are never touched —
+    only genuinely absent ones are filled in). Other (custom) language
+    files are left alone entirely — not our responsibility."""
     directory = _locales_dir()
     os.makedirs(directory, exist_ok=True)
     for code, filename in _BUILTIN_FILENAMES.items():
         path = os.path.join(directory, filename)
-        needs_write = not os.path.exists(path)
-        if not needs_write:
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if not _is_valid_locale_data(data):
-                    raise ValueError("missing code/translations")
-            except Exception as e:
-                logger.warning("Locale file %s corrupted (%s), recreating", filename, e)
-                needs_write = True
-        if needs_write:
+
+        if not os.path.exists(path):
             _write_locale_file(path, code, _BUILTIN_NAMES[code], _BUILTIN_TRANSLATIONS[code])
+            continue
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not _is_valid_locale_data(data):
+                raise ValueError("missing code/translations")
+        except Exception as e:
+            logger.warning("Locale file %s corrupted (%s), recreating", filename, e)
+            _write_locale_file(path, code, _BUILTIN_NAMES[code], _BUILTIN_TRANSLATIONS[code])
+            continue
+
+        translations = data.get("translations", {})
+        missing_keys = set(_BUILTIN_TRANSLATIONS[code]) - set(translations)
+        if missing_keys:
+            for key in missing_keys:
+                translations[key] = _BUILTIN_TRANSLATIONS[code][key]
+            _write_locale_file(
+                path, data.get("code", code), data.get("name", _BUILTIN_NAMES[code]), translations
+            )
+            logger.info("Locale file %s: added %d new key(s)", filename, len(missing_keys))
 
 
 def list_available_languages():
@@ -304,6 +319,10 @@ _BUILTIN_TRANSLATIONS = {
         "tab_settings": "Настройки",
         "tab_chat": "Чат",
         "language_label": "Язык интерфейса:",
+        "theme_label": "Тема:",
+        "theme_light": "Светлая",
+        "theme_dark": "Тёмная",
+        "log_theme_switched": "Тема переключена на: {code}",
         "log_language_fallback": (
             "Сохранённый язык «{saved}» не найден среди доступных — "
             "переключено на «{applied}»"
@@ -611,6 +630,10 @@ _BUILTIN_TRANSLATIONS = {
         "tab_settings": "Settings",
         "tab_chat": "Chat",
         "language_label": "Interface language:",
+        "theme_label": "Theme:",
+        "theme_light": "Light",
+        "theme_dark": "Dark",
+        "log_theme_switched": "Theme switched to: {code}",
         "log_language_fallback": (
             "Saved language \"{saved}\" not found among available ones — "
             "switched to \"{applied}\""
