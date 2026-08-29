@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
     "moderator_model": MODERATOR_DEFAULT_MODEL,
     "user_participation": False,
     "moderator_summary": False,
+    "moderator_web_lookup": False,
     "family_options_cache": {},    # {family_key: [id, ...]}
     "all_model_ids_cache": [],     # unfiltered, for custom-slot autocomplete
     "family_options_updated_at": "",

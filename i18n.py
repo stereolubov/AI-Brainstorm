@@ -419,6 +419,26 @@ _BUILTIN_TRANSLATIONS = {
         ),
         "log_moderator_unrecognized": "Ведущий вернул нераспознаваемый ответ: {content!r} — включаю запасной выбор",
         "log_moderator_decision": "Ведущий выбрал {id}: task={task!r} reason={reason!r}",
+
+        "web_lookup_system_prompt": (
+            "Ты помогаешь подготовить групповой ИИ-брейншторм. У тебя есть "
+            "доступ к актуальному веб-поиску. Перед началом обсуждения "
+            "проверь: 1) какое сегодня число и нет ли у темы неочевидной "
+            "связи с текущей датой, недавними событиями или актуальным "
+            "контекстом; 2) важные факты по самой теме, которые участники "
+            "могут не знать или упустить. Составь короткую (3-6 "
+            "предложений) сводку для участников обсуждения — только то, "
+            "что реально полезно для более содержательного разговора, без "
+            "воды и без пересказа очевидного."
+        ),
+        "web_lookup_user_prompt": "Тема предстоящего обсуждения: {topic}\n\nЧто стоит знать участникам перед стартом?",
+
+        "web_lookup_checkbox": "Ведущий проверяет интернет перед стартом (веб-поиск, небольшая доп. стоимость)",
+        "status_web_lookup": "Ведущий проверяет интернет…",
+        "web_lookup_label": "Проверка интернета ({model})",
+        "web_lookup_transcript_entry": "Ведущий (проверка интернета): {text}",
+        "cost_line_web_lookup": "(стоимость проверки интернета: ${cost})",
+        "log_web_lookup_failed": "Не удалось выполнить проверку интернета: {error}",
         "key_limit_not_set": "лимит на ключ не задан (смотрите общий баланс на openrouter.ai)",
         "key_limit_set": "лимит ключа ${limit}, остаток ${remaining}",
         "key_balance_text": "Потрачено всего с ключа: {usage}  •  {limit_text}",
@@ -727,6 +747,26 @@ _BUILTIN_TRANSLATIONS = {
         ),
         "log_moderator_unrecognized": "Moderator returned an unrecognizable reply: {content!r} — using a fallback pick",
         "log_moderator_decision": "Moderator picked {id}: task={task!r} reason={reason!r}",
+
+        "web_lookup_system_prompt": (
+            "You're helping prepare a group AI brainstorm. You have "
+            "access to live web search. Before the discussion starts, "
+            "check: 1) what today's date is, and whether the topic has "
+            "any non-obvious connection to the current date, recent "
+            "events, or relevant real-world context; 2) important facts "
+            "about the topic itself that participants might not know or "
+            "might overlook. Write a short (3-6 sentence) briefing for "
+            "the participants — only what's genuinely useful for a "
+            "richer discussion, no filler, no restating the obvious."
+        ),
+        "web_lookup_user_prompt": "Topic of the upcoming discussion: {topic}\n\nWhat should the participants know before starting?",
+
+        "web_lookup_checkbox": "Moderator checks the web before starting (web search, small extra cost)",
+        "status_web_lookup": "The moderator is checking the web…",
+        "web_lookup_label": "Web check ({model})",
+        "web_lookup_transcript_entry": "Moderator (web check): {text}",
+        "cost_line_web_lookup": "(web check cost: ${cost})",
+        "log_web_lookup_failed": "Could not complete the web check: {error}",
         "key_limit_not_set": "no limit set on this key (see your overall balance at openrouter.ai)",
         "key_limit_set": "key limit ${limit}, remaining ${remaining}",
         "key_balance_text": "Total spent with this key: {usage}  •  {limit_text}",

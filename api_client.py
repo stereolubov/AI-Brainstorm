@@ -57,7 +57,8 @@ def _request(url, api_key=None, method="GET", payload=None):
         raise OpenRouterError(t("network_error", reason=e.reason)) from e
 
 
-def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_MAX_TOKENS, reasoning_max_tokens=None):
+def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_MAX_TOKENS,
+              reasoning_max_tokens=None, web_search_max_results=None):
     """
     Sends a single chat request to `model_id` via OpenRouter.
 
@@ -66,6 +67,17 @@ def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_
     token budget for hidden reasoning before the visible reply
     (payload["reasoning"] = {"max_tokens": N}). Models without reasoning
     support just ignore the field, no error.
+
+    web_search_max_results: if set, enables OpenRouter's "web" plugin
+    for this one request — it runs a single web search (via Exa, or the
+    provider's own native search where supported) and injects the
+    results as an extra system message before generating the reply.
+    Declarative and one-shot on purpose (vs. the newer tool-calling
+    "openrouter:web_search" server tool, which lets the model call
+    search adaptively/repeatedly within a turn) — a single bounded
+    search keeps cost predictable and needs no tool-call round-trip
+    loop on our side. Its cost is already included in the returned
+    usage["cost"], same as everything else.
 
     Returns (reply_text, usage), where usage is
     {"prompt_tokens": int, "completion_tokens": int, "cost": float|None}.
@@ -87,6 +99,8 @@ def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_
         payload["reasoning"] = {"max_tokens": reasoning_max_tokens}
     else:
         payload["reasoning"] = {"enabled": False}
+    if web_search_max_results:
+        payload["plugins"] = [{"id": "web", "max_results": web_search_max_results}]
 
     logger.debug(t("log_model_request", model=model_id, max_tokens=max_tokens))
     result = _request(CHAT_URL, api_key, method="POST", payload=payload)
@@ -299,3 +313,24 @@ def ask_moderator(api_key, moderator_model_id, topic, transcript_text, participa
     else:
         logger.debug(t("log_moderator_decision", id=decision["next"], task=decision["task"], reason=decision["reason"]))
     return decision, usage
+
+
+def ask_moderator_web_lookup(api_key, moderator_model_id, topic):
+    """
+    Optional pre-session step: asks the moderator model to check the web
+    for the topic (current date, recent events, any real-world context
+    the participants might otherwise miss — e.g. a topic that
+    unknowingly lines up with today's actual date) and summarize
+    anything worth keeping in mind. Runs once, before the discussion
+    starts; the summary gets folded into the transcript so every
+    participant sees it from their very first reply onward.
+
+    Returns (summary_text, usage). Raises OpenRouterError on failure —
+    the caller should treat that as "skip it, don't block the session".
+    """
+    system_prompt = t("web_lookup_system_prompt")
+    user_prompt = t("web_lookup_user_prompt", topic=topic)
+    return ask_model(
+        api_key, moderator_model_id, system_prompt, user_prompt,
+        max_tokens=400, reasoning_max_tokens=None, web_search_max_results=5,
+    )

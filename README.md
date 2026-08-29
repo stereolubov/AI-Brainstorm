@@ -135,6 +135,16 @@ don't count against the reply limit or budget.
 asking the moderator model for a bullet-point recap: key ideas, points
 of agreement/disagreement, an overall takeaway.
 
+**Web check before starting** — off by default. When enabled, the
+moderator runs a single web search (OpenRouter's built-in `web` plugin,
+no separate search API key needed) before the discussion begins,
+looking for anything relevant to the topic — recent events, or a
+non-obvious tie-in with today's actual date the participants might
+otherwise miss entirely. The findings appear as their own message in
+the chat and are folded into the transcript, so every participant sees
+them from their first reply onward. Adds a small extra cost for the
+search itself, shown like any other cost line.
+
 **Intervene** — pause the discussion mid-flight, leave a note for the
 participants, or end the session right there. A dedicated button in
 AI-moderator mode; built into the speaker-picker panel in human mode.
@@ -197,5 +207,5 @@ ai_brainstorm/
 - **2026-08-23** — First release.
 - **2026-08-24** — Added localization (multi-language interface, prompts,
   and log) and various logic bug fixes.
-- **2026-08-29** — Added a Light/Dark theme.
+- **2026-08-29** — Added a Light/Dark theme, and an optional pre-session web check by the moderator.
 

@@ -32,7 +32,10 @@ from models_catalog import (
     FAMILIES, MODERATOR_DEFAULT_MODEL, REASONING_LEVEL_CODES, DEFAULT_REASONING_LEVEL,
     reasoning_level_label, build_full_catalog, find_in_catalog, find_family, short_model_name,
 )
-from api_client import ask_model, ask_moderator, get_key_info, build_family_options, OpenRouterError
+from api_client import (
+    ask_model, ask_moderator, ask_moderator_web_lookup, get_key_info,
+    build_family_options, OpenRouterError,
+)
 import i18n
 from i18n import t
 import theme
@@ -713,6 +716,13 @@ class SettingsTab(ttk.Frame):
             frame, text=t("moderator_summary_checkbox"), variable=self.moderator_summary_var,
         ).pack(anchor="w", pady=(4, 0))
 
+        self.web_lookup_var = tk.BooleanVar(
+            value=self.config_data.get("moderator_web_lookup", False)
+        )
+        ttk.Checkbutton(
+            frame, text=t("web_lookup_checkbox"), variable=self.web_lookup_var,
+        ).pack(anchor="w", pady=(4, 0))
+
         ttk.Label(
             frame, text=t("moderator_block_hint"),
             foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
@@ -1002,6 +1012,7 @@ class SettingsTab(ttk.Frame):
             "moderator_model": self.moderator_model_var.get(),
             "user_participation": self.participation_var.get(),
             "moderator_summary": self.moderator_summary_var.get(),
+            "moderator_web_lookup": self.web_lookup_var.get(),
         }
 
     def _save(self):
@@ -1212,6 +1223,7 @@ class ChatTab(ttk.Frame):
         self.chat_log.tag_config("error", foreground="#c62828")
         self.chat_log.tag_config("user_note", foreground="#1565c0", font=("Segoe UI", 10, "bold"))
         self.chat_log.tag_config("summary", foreground="#2e7d32", font=("Segoe UI", 10, "bold"))
+        self.chat_log.tag_config("web_lookup", foreground="#0e7490", font=("Segoe UI", 10, "bold"))
         self.chat_log.tag_config("separator", foreground=tag_colors["separator"])
         self.chat_log.tag_config("code", font=("Consolas", 9), background=tag_colors["code_bg"])
         self.chat_log.tag_config("bold", font=("Segoe UI", 10, "bold"))
@@ -1407,6 +1419,7 @@ class ChatTab(ttk.Frame):
         moderator_model = self.config_data.get("moderator_model", MODERATOR_DEFAULT_MODEL)
         user_participation = self.config_data.get("user_participation", False)
         moderator_summary = self.config_data.get("moderator_summary", False)
+        moderator_web_lookup = self.config_data.get("moderator_web_lookup", False)
 
         # Persist the current "max replies" value so it's picked up next
         # run too, same as other settings.
@@ -1436,13 +1449,15 @@ class ChatTab(ttk.Frame):
         self.worker_thread = threading.Thread(
             target=self._run_worker,
             args=(api_key, full_catalog, topic, max_replies, budget,
-                  moderator_mode, moderator_model, user_participation, moderator_summary),
+                  moderator_mode, moderator_model, user_participation, moderator_summary,
+                  moderator_web_lookup),
             daemon=True,
         )
         self.worker_thread.start()
 
     def _run_worker(self, api_key, full_catalog, topic, max_replies, budget,
-                     moderator_mode, moderator_model, user_participation, moderator_summary):
+                     moderator_mode, moderator_model, user_participation, moderator_summary,
+                     moderator_web_lookup):
         """Runs in the background thread — doesn't block the UI."""
         transcript_lines = []
         total_cost = 0.0
@@ -1475,6 +1490,26 @@ class ChatTab(ttk.Frame):
                                     # guarantees the loop terminates even
                                     # under some other, unforeseen pathological
                                     # moderator behavior.
+
+        if moderator_web_lookup:
+            self.ui_queue.put(("status", t("status_web_lookup"), None, None))
+            try:
+                lookup_text, lookup_usage = ask_moderator_web_lookup(api_key, moderator_model, topic)
+                lookup_cost = lookup_usage.get("cost")
+                lookup_shown = lookup_text
+                if isinstance(lookup_cost, (int, float)):
+                    total_cost += lookup_cost
+                    lookup_shown += f"{_COST_MARKER}{t('cost_line_web_lookup', cost=f'{lookup_cost:.4f}')}"
+                model_short = short_model_name(moderator_model)
+                self.ui_queue.put((
+                    "message", t("web_lookup_label", model=model_short), "web_lookup", lookup_shown,
+                ))
+                self.ui_queue.put(("cost", f"${total_cost:.4f}", str(budget), None))
+                # Folded into the transcript (not just shown once in chat)
+                # so every participant sees it from their very first reply.
+                transcript_lines.append(t("web_lookup_transcript_entry", text=lookup_text))
+            except OpenRouterError as e:
+                logger.warning(t("log_web_lookup_failed", error=e))
 
         while True:
             loop_guard += 1
