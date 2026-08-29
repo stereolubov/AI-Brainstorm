@@ -63,6 +63,7 @@ class QueueLogHandler(logging.Handler):
 
 
 APP_TITLE = "AI Brainstorm"
+WINDOW_TITLE = "AI Brainstorm by stereolubov"
 MIN_MODELS = 2
 MAX_STANDARD_MODELS = 5
 MAX_CUSTOM_MODELS = 3
@@ -204,26 +205,51 @@ class ScrollableFrame(ttk.Frame):
         super().__init__(parent)
         self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
         theme.apply_canvas_theme(self.canvas, get_theme_code())
-        vscroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        hscroll = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        self.vscroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.hscroll = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
 
         self.inner = ttk.Frame(self.canvas, padding=12)
         self._window_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
 
-        self.canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+        self.canvas.configure(yscrollcommand=self.vscroll.set, xscrollcommand=self.hscroll.set)
 
         self.canvas.grid(row=0, column=0, sticky="nsew")
-        vscroll.grid(row=0, column=1, sticky="ns")
-        hscroll.grid(row=1, column=0, sticky="ew")
+        self.vscroll.grid(row=0, column=1, sticky="ns")
+        self.hscroll.grid(row=1, column=0, sticky="ew")
+        self._hscroll_visible = True
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
         self.inner.bind("<Configure>", self._on_inner_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
         self.canvas.bind("<Enter>", self._bind_mousewheel)
         self.canvas.bind("<Leave>", self._unbind_mousewheel)
 
     def _on_inner_configure(self, _event):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self._update_hscroll_visibility()
+
+    def _on_canvas_configure(self, _event):
+        self._update_hscroll_visibility()
+
+    def _update_hscroll_visibility(self):
+        """Hides the horizontal scrollbar entirely when the content
+        actually fits the current window width — no point showing an
+        always-on, always-empty scroll track when there's nothing to
+        scroll sideways (which also happened to look visually "stuck"
+        in the light theme's color regardless of the active theme)."""
+        bbox = self.canvas.bbox("all")
+        if not bbox:
+            return
+        content_width = bbox[2] - bbox[0]
+        viewport_width = self.canvas.winfo_width()
+        needed = content_width > viewport_width
+        if needed and not self._hscroll_visible:
+            self.hscroll.grid(row=1, column=0, sticky="ew")
+            self._hscroll_visible = True
+        elif not needed and self._hscroll_visible:
+            self.hscroll.grid_remove()
+            self._hscroll_visible = False
 
     def _bind_mousewheel(self, _event):
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
@@ -257,6 +283,7 @@ class LogTab(ttk.Frame):
         )
         self.log_text.pack(fill="both", expand=True)
         theme.apply_text_widget_theme(self.log_text, get_theme_code())
+        theme.replace_scrollbar_with_ttk(self.log_text)
         self.log_text.tag_config("ERROR", foreground="#c62828")
         self.log_text.tag_config("WARNING", foreground="#e65100")
         self.log_text.bind("<Control-Key>", _make_hotkey_handler({
@@ -1178,6 +1205,7 @@ class ChatTab(ttk.Frame):
         )
         self.chat_log.pack(fill="both", expand=True)
         theme.apply_text_widget_theme(self.chat_log, get_theme_code())
+        theme.replace_scrollbar_with_ttk(self.chat_log)
 
         tag_colors = theme.theme_tag_colors(get_theme_code())
         self.chat_log.tag_config("system", foreground=tag_colors["muted_fg"])
@@ -1690,7 +1718,7 @@ class App(tk.Tk):
         # from this point on automatically.
         theme.apply_theme(self, get_theme_code())
 
-        self.title(APP_TITLE)
+        self.title(WINDOW_TITLE)
 
         icon_path = _resource_path("favicon.ico")
         if os.path.exists(icon_path):

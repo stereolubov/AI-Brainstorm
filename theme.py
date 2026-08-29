@@ -28,19 +28,23 @@ THEMES = {
         "border": "#cccccc",
         "separator": "#cccccc",
         "code_bg": "#f0f0f0",
+        "accent": "#1a73e8",  # confident blue — distinct from dark theme's coral on purpose
     },
     "dark": {
+        # Sampled pixel-for-pixel from a companion dark-themed app for a
+        # consistent, deliberately-matched look across the two projects.
         "window_bg": "#1e1e1e",
-        "surface_bg": "#252526",
-        "fg": "#e0e0e0",
-        "muted_fg": "#9a9a9a",
-        "entry_bg": "#2d2d30",
-        "button_bg": "#3a3a3d",
-        "button_active_bg": "#48484c",
-        "select_bg": "#264f78",
-        "border": "#3a3a3a",
-        "separator": "#444444",
+        "surface_bg": "#2d2d2d",
+        "fg": "#ffffff",
+        "muted_fg": "#9c9c9c",
+        "entry_bg": "#393939",
+        "button_bg": "#393939",
+        "button_active_bg": "#454545",
+        "select_bg": "#4a3a35",
+        "border": "#2d2d2d",
+        "separator": "#3a3a3a",
         "code_bg": "#161616",
+        "accent": "#f38064",  # warm coral, sampled from the reference app's checkbox
     },
 }
 
@@ -76,9 +80,13 @@ def apply_theme(root, code):
     style.configure("TLabel", background=p["surface_bg"], foreground=p["fg"])
 
     style.configure("TCheckbutton", background=p["surface_bg"], foreground=p["fg"])
-    style.map("TCheckbutton", background=[("active", p["surface_bg"])])
+    style.map("TCheckbutton",
+              background=[("active", p["surface_bg"])],
+              indicatorcolor=[("selected", p["accent"]), ("!selected", p["entry_bg"])])
     style.configure("TRadiobutton", background=p["surface_bg"], foreground=p["fg"])
-    style.map("TRadiobutton", background=[("active", p["surface_bg"])])
+    style.map("TRadiobutton",
+              background=[("active", p["surface_bg"])],
+              indicatorcolor=[("selected", p["accent"]), ("!selected", p["entry_bg"])])
 
     style.configure("TButton", background=p["button_bg"], foreground=p["fg"],
                      bordercolor=p["border"])
@@ -88,13 +96,16 @@ def apply_theme(root, code):
 
     style.configure("TEntry", fieldbackground=p["entry_bg"], foreground=p["fg"],
                      bordercolor=p["border"], insertcolor=p["fg"])
+    style.map("TEntry", bordercolor=[("focus", p["accent"])])
     style.configure("TCombobox", fieldbackground=p["entry_bg"], foreground=p["fg"],
                      background=p["button_bg"], bordercolor=p["border"], arrowcolor=p["fg"])
     style.map("TCombobox",
               fieldbackground=[("readonly", p["entry_bg"])],
-              foreground=[("readonly", p["fg"])])
+              foreground=[("readonly", p["fg"])],
+              bordercolor=[("focus", p["accent"])])
     style.configure("TSpinbox", fieldbackground=p["entry_bg"], foreground=p["fg"],
                      bordercolor=p["border"], arrowcolor=p["fg"])
+    style.map("TSpinbox", bordercolor=[("focus", p["accent"])])
 
     style.configure("TNotebook", background=p["window_bg"], bordercolor=p["border"])
     style.configure("TNotebook.Tab", background=p["button_bg"], foreground=p["fg"], padding=(10, 4))
@@ -106,7 +117,36 @@ def apply_theme(root, code):
     for orient in ("Vertical", "Horizontal"):
         style.configure(f"{orient}.TScrollbar", background=p["button_bg"],
                          troughcolor=p["surface_bg"], bordercolor=p["border"],
-                         arrowcolor=p["fg"])
+                         arrowcolor=p["fg"], lightcolor=p["button_bg"], darkcolor=p["button_bg"])
+        style.map(f"{orient}.TScrollbar",
+                   background=[("active", p["button_active_bg"])])
+
+
+def replace_scrollbar_with_ttk(scrolled_text):
+    """
+    scrolledtext.ScrolledText builds its own internal vertical scrollbar
+    using the CLASSIC (non-ttk) tk.Scrollbar (exposed as `.vbar`). On
+    Windows, classic widgets like this are drawn by the OS's own
+    UxTheme engine, which simply ignores bg/troughcolor/etc — no amount
+    of color configuration has any visible effect there (it looks fine
+    on Linux/X11, where Tk draws it itself, which is why this wasn't
+    obvious without a real Windows test). The only reliable fix is
+    swapping it out for a themeable ttk.Scrollbar, wired up the same
+    way. Once swapped, it follows ttk.Style() automatically forever —
+    no re-theming call needed on later theme switches.
+
+    Call this once, right after creating the ScrolledText.
+    """
+    from tkinter import ttk
+
+    old = scrolled_text.vbar
+    parent = old.master
+    new = ttk.Scrollbar(parent, orient="vertical", command=scrolled_text.yview)
+    old.destroy()
+    new.pack(side="right", fill="y")
+    scrolled_text.configure(yscrollcommand=new.set)
+    scrolled_text.vbar = new
+    return new
 
 
 def apply_text_widget_theme(widget, code):

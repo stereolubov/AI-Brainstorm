@@ -81,8 +81,32 @@ def _ensure_builtin_files():
             logger.info("Locale file %s: added %d new key(s)", filename, len(missing_keys))
 
 
+def _log_custom_language_completeness(filename, code, name, translations):
+    """
+    For third-party language files (anything besides our own Russian/
+    English), there's no embedded reference translation to self-heal
+    from — the maintainer wrote every string themselves. But we CAN
+    tell them which keys are missing, using English as the canonical,
+    always-complete key set, so an out-of-date community translation
+    doesn't just silently show mystery English fallback text with no
+    indication of why. This only logs — it never edits the file.
+    """
+    reference_keys = set(_BUILTIN_TRANSLATIONS[DEFAULT_LANGUAGE_CODE])
+    missing = reference_keys - set(translations)
+    if missing:
+        logger.warning(
+            "Custom language file %s (%s/%s) is missing %d key(s) — falling back to "
+            "English for those until updated: %s",
+            filename, code, name, len(missing), ", ".join(sorted(missing)),
+        )
+
+
 def list_available_languages():
-    """Rescans locales/ and returns [{"code","name","path"}, ...]."""
+    """Rescans locales/ and returns [{"code","name","path"}, ...]. Also
+    logs a completeness warning for any third-party language file that's
+    missing keys compared to the English reference (see
+    _log_custom_language_completeness) — informational only, never
+    modifies the file."""
     _ensure_builtin_files()
     directory = _locales_dir()
     languages = []
@@ -95,7 +119,12 @@ def list_available_languages():
                 data = json.load(f)
             if not _is_valid_locale_data(data):
                 raise ValueError("missing code/translations")
-            languages.append({"code": data["code"], "name": data.get("name") or data["code"], "path": path})
+            code = data["code"]
+            name = data.get("name") or code
+            translations = data["translations"]
+            if code not in _BUILTIN_FILENAMES:
+                _log_custom_language_completeness(filename, code, name, translations)
+            languages.append({"code": code, "name": name, "path": path})
         except Exception as e:
             logger.warning("Skipping locale file %s: %s", filename, e)
 
