@@ -434,6 +434,12 @@ _BUILTIN_TRANSLATIONS = {
         "web_lookup_user_prompt": "Тема предстоящего обсуждения: {topic}\n\nЧто стоит знать участникам перед стартом?",
 
         "web_lookup_checkbox": "Ведущий проверяет интернет перед стартом (веб-поиск, небольшая доп. стоимость)",
+        "moderator_free_only_checkbox": (
+            "Показывать в выборе только бесплатные модели (из-за ограничений "
+            "этих моделей возможна нестабильная работа ИИ ведущего, "
+            "рекомендуется режим «Человек» без трат)"
+        ),
+        "log_moderator_free_only_toggled": "Фильтр «только бесплатные» для ведущего переключён: {value}",
         "status_web_lookup": "Ведущий проверяет интернет…",
         "web_lookup_label": "Проверка интернета ({model})",
         "web_lookup_transcript_entry": "Ведущий (проверка интернета): {text}",
@@ -489,10 +495,21 @@ _BUILTIN_TRANSLATIONS = {
         "log_refresh_models_requested": "Запрошено обновление списка моделей по семействам",
         "log_refresh_models_failed": "Не удалось обновить список моделей: {error}",
         "refresh_error": "Ошибка обновления: {error}",
-        "models_updated_status": "обновлено: {timestamp} ({counts}, всего моделей: {total})",
-        "log_models_updated": "Список моделей обновлён: {counts} (всего {total})",
+        "models_updated_status": "обновлено: {timestamp}. Всего моделей: {total}, из них бесплатно: {free}.",
+        "log_models_updated": "Список моделей обновлён: всего {total}, бесплатных {free}",
 
         "custom_models_title": "Дополнительные модели (до {max}, свои)",
+        "flat_models_title": "Модели (до {max}, все свои)",
+        "use_families_checkbox": "Использовать семейства (снимите галочку для 8 независимых слотов вместо 5 семейств + 3 своих)",
+        "families_disabled_note": (
+            "Семейства отключены — настройте всех участников ниже, в блоке "
+            "«Модели» (8 независимых слотов). Уже выбранные семейства и их "
+            "настройки не потеряются — они просто скрыты, пока не включите "
+            "эту галочку обратно."
+        ),
+        "log_use_families_toggled": "Режим семейств переключён: {value}",
+        "free_only_checkbox": "Показывать в выборе только бесплатные модели",
+        "log_free_only_toggled": "Фильтр «только бесплатные» переключён: {value}",
         "custom_models_info": (
             "ℹ Сюда можно добавить любую другую модель с OpenRouter — "
             "например, DeepSeek или что угодно ещё из полного каталога. "
@@ -762,6 +779,12 @@ _BUILTIN_TRANSLATIONS = {
         "web_lookup_user_prompt": "Topic of the upcoming discussion: {topic}\n\nWhat should the participants know before starting?",
 
         "web_lookup_checkbox": "Moderator checks the web before starting (web search, small extra cost)",
+        "moderator_free_only_checkbox": (
+            "Show only free models to choose from (due to free-model "
+            "limitations, the AI moderator may work unreliably — better "
+            "to use \"Human\" mode to avoid any cost)"
+        ),
+        "log_moderator_free_only_toggled": "Moderator's \"free only\" filter toggled: {value}",
         "status_web_lookup": "The moderator is checking the web…",
         "web_lookup_label": "Web check ({model})",
         "web_lookup_transcript_entry": "Moderator (web check): {text}",
@@ -816,10 +839,21 @@ _BUILTIN_TRANSLATIONS = {
         "log_refresh_models_requested": "Model list refresh requested",
         "log_refresh_models_failed": "Could not refresh model list: {error}",
         "refresh_error": "Refresh error: {error}",
-        "models_updated_status": "updated: {timestamp} ({counts}, {total} models total)",
-        "log_models_updated": "Model list updated: {counts} ({total} total)",
+        "models_updated_status": "updated: {timestamp}. Models: {total} total, {free} free.",
+        "log_models_updated": "Model list updated: {total} total, {free} free",
 
         "custom_models_title": "Additional Models (up to {max}, your own)",
+        "flat_models_title": "Models (up to {max}, all your own)",
+        "use_families_checkbox": "Use families (uncheck for 8 independent slots instead of 5 families + 3 of your own)",
+        "families_disabled_note": (
+            "Families are off — set up all participants below, in the "
+            "\"Models\" block (8 independent slots). Your already-configured "
+            "families and their settings aren't lost — they're just hidden "
+            "until you turn this checkbox back on."
+        ),
+        "log_use_families_toggled": "Family mode toggled: {value}",
+        "free_only_checkbox": "Show only free models to choose from",
+        "log_free_only_toggled": "\"Free models only\" filter toggled: {value}",
         "custom_models_info": (
             "ℹ Add any other OpenRouter model here — DeepSeek, or "
             "anything else from the full catalog. Enter the exact model "

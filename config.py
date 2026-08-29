@@ -29,17 +29,23 @@ DEFAULT_PROFILE_NAME = "default"
 DEFAULT_LANGUAGE_CODE = "en"
 
 
+MAX_CUSTOM_SLOTS_STORED = 8  # always allocate all 8 — family mode only shows/uses the
+                              # first 3, but keeping the rest around means toggling
+                              # "use_families" off and back on never loses data either way.
+
+
 def _empty_custom_slots():
     # Independent dicts — must not be the same object, or editing one
-    # slot would affect all three.
+    # slot would affect all others.
     return [
         {"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "off"}
-        for _ in range(3)
+        for _ in range(MAX_CUSTOM_SLOTS_STORED)
     ]
 
 
 DEFAULT_CONFIG = {
     "api_key": "",
+    "use_families": True,          # False = ignore families entirely, use all 8 custom_models slots
     "selected_families": [],
     "family_model_choice": {},     # {family_key: chosen model_id}
     "personas": {},                # {family_key: persona text}
@@ -52,8 +58,11 @@ DEFAULT_CONFIG = {
     "user_participation": False,
     "moderator_summary": False,
     "moderator_web_lookup": False,
+    "moderator_free_only": False,
     "family_options_cache": {},    # {family_key: [id, ...]}
     "all_model_ids_cache": [],     # unfiltered, for custom-slot autocomplete
+    "free_model_ids_cache": [],    # subset priced at $0 — for "free models only" in flat/custom slots
+    "custom_models_free_only": False,  # only meaningful when use_families=False
     "family_options_updated_at": "",
 }
 
@@ -139,14 +148,15 @@ def switch_active_profile(name):
 
 
 def _normalize(data):
-    # Fill in defaults for missing keys, guarantee exactly 3 custom slots
-    # (handles files from older versions of the app).
+    # Fill in defaults for missing keys, guarantee exactly
+    # MAX_CUSTOM_SLOTS_STORED custom slots (handles files from older
+    # versions of the app, which only ever stored 3).
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     merged.update(data)
 
     slots = merged.get("custom_models") or []
-    slots = list(slots)[:3]
-    while len(slots) < 3:
+    slots = list(slots)[:MAX_CUSTOM_SLOTS_STORED]
+    while len(slots) < MAX_CUSTOM_SLOTS_STORED:
         slots.append({"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "off"})
     for slot in slots:
         slot.setdefault("reasoning_level", "off")

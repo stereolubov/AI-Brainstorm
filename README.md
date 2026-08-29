@@ -107,6 +107,22 @@ model list.
 2 to 8 participants total. In chat, each one's label shows the exact
 model in use, e.g. "Claude (claude-sonnet-5)".
 
+**Skip families entirely** — a "Use families" checkbox in the standard
+models block; uncheck it to turn the 5 standard + 3 custom layout into
+8 flat, fully generic slots instead (no preset personas or brand colors
+tied to a vendor). Unchecking it migrates your currently-configured
+families into the newly available slots (in a fixed Claude → ChatGPT →
+Grok → Gemini → MistralAI order, regardless of which were checked, so
+the visual order stays predictable) — your prior 3 custom slots aren't
+touched or reshuffled. Checking it back on restores your family
+configuration exactly as it was; both are always kept in the saved
+profile regardless of which is currently active.
+
+**Free models only** — when families are off, a second checkbox
+filters the ID autocomplete down to $0-priced models only (detected via
+OpenRouter's own per-model pricing data, refreshed together with the
+main model list). Switches instantly, no extra network call.
+
 ### Reasoning levels
 
 Optional token budget for a model's hidden "thinking" before its
@@ -202,10 +218,33 @@ ai_brainstorm/
 ├── README.md / README.ru.md
 ```
 
+## Known issues
+
+- **Profiles from before 2026-08-30 that had already used the family ↔
+  flat-slots toggle may show the wrong models in the 3 "own" slots
+  after updating.** The internal storage order changed (families now
+  always occupy fixed slots 1-5, "own" custom slots moved to 6-8, so
+  toggling never reshuffles the list) — profiles that never used the
+  toggle aren't affected. If yours is, open the profile's `.json` file
+  in `~/.ai_brainstorm/profiles/` and reorder the `custom_models` array
+  so entries 1-5 are your families (in Claude/ChatGPT/Grok/Gemini/
+  MistralAI order) and 6-8 are your own custom models — or just
+  re-enter the custom slots by hand in Settings, whichever's less typing.
+- **Locale self-healing only adds missing keys, not corrected wording.**
+  If an existing translation's text is ever fixed in a future update,
+  your saved `Russian.json`/`English.json` in `~/.ai_brainstorm/locales/`
+  keeps whatever it already has for that key — self-healing only fills
+  in keys that are entirely absent. If a label looks outdated after an
+  update, delete the corresponding file (the app regenerates it from
+  the current built-in defaults on next launch).
+
 ## Changelog
 
 - **2026-08-23** — First release.
 - **2026-08-24** — Added localization (multi-language interface, prompts,
   and log) and various logic bug fixes.
 - **2026-08-29** — Added a Light/Dark theme, and an optional pre-session web check by the moderator.
+- **2026-08-30** — Added an option to skip families entirely for 8 flat
+  custom slots, and a "free models only" filter for that mode's
+  autocomplete.
 

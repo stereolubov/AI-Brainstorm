@@ -143,11 +143,31 @@ def get_key_info(api_key):
     }
 
 
+def _fetch_all_models_raw(api_key=None):
+    """Raw OpenRouter model list (list of dicts with id/pricing/etc.) —
+    fetched once and reused to derive all_ids, free_ids, and family
+    groupings without hitting the network three times for one refresh click."""
+    result = _request(MODELS_LIST_URL, api_key, method="GET")
+    return result.get("data", []) or []
+
+
+def _is_free_model(model_data):
+    """OpenRouter's /models response includes a "pricing" object with
+    per-token prices as strings (to dodge float precision issues) — a
+    model is free when both prompt and completion pricing are exactly
+    "0". More robust than checking for a ":free" suffix in the id,
+    though that convention also happens to hold in practice."""
+    pricing = model_data.get("pricing") or {}
+    try:
+        return float(pricing.get("prompt", "1")) == 0 and float(pricing.get("completion", "1")) == 0
+    except (TypeError, ValueError):
+        return False
+
+
 def fetch_all_model_ids(api_key=None):
     """Full list of OpenRouter model IDs (public endpoint, key optional
     but passed along if present — doesn't hurt)."""
-    result = _request(MODELS_LIST_URL, api_key, method="GET")
-    return [m.get("id", "") for m in result.get("data", []) if m.get("id")]
+    return [m.get("id", "") for m in _fetch_all_models_raw(api_key) if m.get("id")]
 
 
 def build_family_options(api_key=None):
@@ -155,18 +175,24 @@ def build_family_options(api_key=None):
     Groups the full OpenRouter model list by family (see
     models_catalog.FAMILIES) via regex.
 
-    Returns (options, all_ids):
+    Returns (options, all_ids, free_ids):
       options — {family_key: [sorted matching model_id, ...]}
       all_ids — the full unfiltered ID list (used e.g. for autocomplete
                 in custom-model slots, where a model might not match any family).
+      free_ids — subset of all_ids priced at $0 for both prompt and
+                completion (see _is_free_model) — for the "free models
+                only" option in custom/flat slots.
     """
-    all_ids = fetch_all_model_ids(api_key)
+    raw = _fetch_all_models_raw(api_key)
+    all_ids = [m.get("id", "") for m in raw if m.get("id")]
+    free_ids = [m.get("id", "") for m in raw if m.get("id") and _is_free_model(m)]
+
     options = {}
     for fam in FAMILIES:
         pattern = re.compile(fam["pattern"])
         matched = sorted({model_id for model_id in all_ids if pattern.match(model_id)})
         options[fam["key"]] = matched
-    return options, all_ids
+    return options, sorted(all_ids), sorted(free_ids)
 
 
 # ---------- Moderator ----------

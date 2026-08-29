@@ -86,6 +86,11 @@ FAMILIES = [
 ]
 
 CUSTOM_SLOT_COLORS = ["#8E44AD", "#16A085", "#D4AC0D"]
+
+# Used when "use_families" is off — 8 flat slots need 8 distinct colors.
+# Reuses the 5 family colors + the 3 custom-slot colors rather than
+# inventing a new palette from scratch.
+FLAT_MODE_COLORS = [fam["color"] for fam in FAMILIES] + CUSTOM_SLOT_COLORS
 CUSTOM_DEFAULT_PERSONA = (
     "You are a participant in a group brainstorm. Reply concisely and to "
     "the point, reacting to what other participants said."
@@ -143,27 +148,42 @@ def build_full_catalog(config):
     """
     full = []
 
-    selected_families = set(config.get("selected_families", []))
-    family_choice = config.get("family_model_choice", {})
-    personas = config.get("personas", {})
-    reasoning_levels = config.get("reasoning_levels", {})
+    use_families = config.get("use_families", True)
+    custom_models = config.get("custom_models", []) or []
 
-    for fam in FAMILIES:
-        key = fam["key"]
-        if key not in selected_families:
-            continue
-        model_id = family_choice.get(key) or fam["default_model"]
-        persona = personas.get(key) or fam["default_persona"]
-        level_code = normalize_reasoning_level(reasoning_levels.get(key))
-        full.append({
-            "id": model_id,
-            "label": f"{fam['label']} ({short_model_name(model_id)})",
-            "color": fam["color"],
-            "persona": persona,
-            "reasoning_max_tokens": REASONING_LEVELS.get(level_code),
-        })
+    if use_families:
+        selected_families = set(config.get("selected_families", []))
+        family_choice = config.get("family_model_choice", {})
+        personas = config.get("personas", {})
+        reasoning_levels = config.get("reasoning_levels", {})
 
-    for index, item in enumerate(config.get("custom_models", []) or []):
+        for fam in FAMILIES:
+            key = fam["key"]
+            if key not in selected_families:
+                continue
+            model_id = family_choice.get(key) or fam["default_model"]
+            persona = personas.get(key) or fam["default_persona"]
+            level_code = normalize_reasoning_level(reasoning_levels.get(key))
+            full.append({
+                "id": model_id,
+                "label": f"{fam['label']} ({short_model_name(model_id)})",
+                "color": fam["color"],
+                "persona": persona,
+                "reasoning_max_tokens": REASONING_LEVELS.get(level_code),
+            })
+        # The 3 "own" slots live at storage indices 5-7 (not 0-2) — so
+        # that switching to flat mode can put the 5 families at indices
+        # 0-4 in their natural order without having to shuffle these
+        # around; the visual list order stays stable either way.
+        slots_to_use = custom_models[5:8]
+        slot_colors = CUSTOM_SLOT_COLORS
+    else:
+        # Families switched off entirely — all 8 slots are flat, generic
+        # custom entries, no family concept involved at all.
+        slots_to_use = custom_models[:8]
+        slot_colors = FLAT_MODE_COLORS
+
+    for index, item in enumerate(slots_to_use):
         if not item.get("enabled"):
             continue
         model_id = (item.get("id") or "").strip()
@@ -177,7 +197,7 @@ def build_full_catalog(config):
         full.append({
             "id": model_id,
             "label": label,
-            "color": CUSTOM_SLOT_COLORS[index % len(CUSTOM_SLOT_COLORS)],
+            "color": slot_colors[index % len(slot_colors)],
             "persona": persona,
             "reasoning_max_tokens": REASONING_LEVELS.get(level_code),
         })

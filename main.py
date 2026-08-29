@@ -69,8 +69,9 @@ APP_TITLE = "AI Brainstorm"
 WINDOW_TITLE = "AI Brainstorm by stereolubov"
 MIN_MODELS = 2
 MAX_STANDARD_MODELS = 5
-MAX_CUSTOM_MODELS = 3
-MAX_MODELS = MAX_STANDARD_MODELS + MAX_CUSTOM_MODELS  # = 8
+MAX_CUSTOM_MODELS = 3   # custom slots alongside families, when use_families=True
+MAX_FLAT_SLOTS = 8      # all-custom slots, when use_families=False (families ignored)
+MAX_MODELS = MAX_STANDARD_MODELS + MAX_CUSTOM_MODELS  # = 8, same total either way
 OPENROUTER_MODELS_URL = "https://openrouter.ai/models"
 OPENROUTER_REASONING_DOCS_URL = "https://openrouter.ai/docs/use-cases/reasoning-tokens"
 
@@ -198,6 +199,46 @@ def _make_hotkey_handler(actions):
         return None
 
     return handler
+
+
+def _hotkey_copy(event):
+    event.widget.event_generate("<<Copy>>")
+    return "break"
+
+
+def _hotkey_paste(event):
+    event.widget.event_generate("<<Paste>>")
+    return "break"
+
+
+def _hotkey_cut(event):
+    event.widget.event_generate("<<Cut>>")
+    return "break"
+
+
+def _hotkey_select_all(event):
+    widget = event.widget
+    if isinstance(widget, tk.Text):
+        widget.tag_add("sel", "1.0", "end")
+    else:
+        try:
+            widget.selection_range(0, "end")
+        except tk.TclError:
+            pass
+    return "break"
+
+
+# Generic (not bound to any specific widget instance) — used for a
+# single class-wide binding covering every Entry/Combobox/Spinbox/Text
+# in Settings at once (see App.__init__), instead of wiring each of the
+# many form fields individually. Safe even for the read-only chat/log
+# Text widgets, which already have their own narrower instance-level
+# "c"/"a"-only binding taking precedence — for "v"/"x" there, this
+# generic one falls through to a harmless no-op (state="disabled"
+# blocks the actual paste/cut from doing anything).
+_GENERIC_EDITABLE_HOTKEYS = _make_hotkey_handler({
+    "c": _hotkey_copy, "v": _hotkey_paste, "x": _hotkey_cut, "a": _hotkey_select_all,
+})
 
 
 class ScrollableFrame(ttk.Frame):
@@ -351,6 +392,14 @@ class SettingsTab(ttk.Frame):
         self.persona_texts = {}
         self.reasoning_vars = {}       # key -> StringVar holding the LABEL (translated), not the code
         self.custom_slots = []
+
+        self.use_families_var = tk.BooleanVar(value=self.config_data.get("use_families", True))
+        self.custom_slot_count = MAX_CUSTOM_MODELS if self.use_families_var.get() else MAX_FLAT_SLOTS
+        # In family mode the 3 "own" slots are stored at indices 5-7 (not
+        # 0-2) — so switching to flat mode can place the 5 families at
+        # indices 0-4 in their natural order without reshuffling these,
+        # keeping the visual list order stable across the toggle.
+        self.custom_slot_offset = (MAX_FLAT_SLOTS - MAX_CUSTOM_MODELS) if self.use_families_var.get() else 0
 
         # Reasoning-level combos show a translated label but must save a
         # language-neutral code — build the label<->code mapping once.
@@ -584,8 +633,8 @@ class SettingsTab(ttk.Frame):
         self.api_key_var = tk.StringVar(value=self.config_data.get("api_key", ""))
         self.show_key_var = tk.BooleanVar(value=False)
 
-        entry = ttk.Entry(frame, textvariable=self.api_key_var, width=50, show="*")
-        entry.pack(side="left", fill="x", expand=True)
+        entry = ttk.Entry(frame, textvariable=self.api_key_var, width=61, show="*")
+        entry.pack(side="left")
 
         def toggle_show():
             entry.config(show="" if self.show_key_var.get() else "*")
@@ -681,11 +730,13 @@ class SettingsTab(ttk.Frame):
         mode_row.pack(fill="x")
         ttk.Label(mode_row, text=t("moderator_label")).pack(side="left")
         ttk.Radiobutton(
-            mode_row, text=t("moderator_mode_ai"), variable=self.moderator_mode_var, value="ai"
+            mode_row, text=t("moderator_mode_ai"), variable=self.moderator_mode_var, value="ai",
+            command=self._on_moderator_mode_changed,
         ).pack(side="left", padx=(8, 0))
         ttk.Radiobutton(
             mode_row, text=t("moderator_mode_human"),
             variable=self.moderator_mode_var, value="human",
+            command=self._on_moderator_mode_changed,
         ).pack(side="left", padx=(8, 0))
 
         model_row = ttk.Frame(frame)
@@ -702,31 +753,92 @@ class SettingsTab(ttk.Frame):
         self.moderator_model_combo.pack(side="left", padx=(8, 0))
         self._protect_from_wheel(self.moderator_model_combo)
 
+        self.moderator_free_only_var = tk.BooleanVar(
+            value=self.config_data.get("moderator_free_only", False)
+        )
+        self.moderator_free_only_check = ttk.Checkbutton(
+            frame, text=t("moderator_free_only_checkbox"), variable=self.moderator_free_only_var,
+            command=self._on_moderator_free_only_toggled,
+        )
+        self.moderator_free_only_check.pack(anchor="w", pady=(6, 0))
+
         self.participation_var = tk.BooleanVar(
             value=self.config_data.get("user_participation", False)
         )
-        ttk.Checkbutton(
+        self.participation_check = ttk.Checkbutton(
             frame, text=t("participation_checkbox"), variable=self.participation_var,
-        ).pack(anchor="w", pady=(8, 0))
+        )
+        self.participation_check.pack(anchor="w", pady=(8, 0))
 
         self.moderator_summary_var = tk.BooleanVar(
             value=self.config_data.get("moderator_summary", False)
         )
-        ttk.Checkbutton(
+        self.moderator_summary_check = ttk.Checkbutton(
             frame, text=t("moderator_summary_checkbox"), variable=self.moderator_summary_var,
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        self.moderator_summary_check.pack(anchor="w", pady=(4, 0))
 
         self.web_lookup_var = tk.BooleanVar(
             value=self.config_data.get("moderator_web_lookup", False)
         )
-        ttk.Checkbutton(
+        self.web_lookup_check = ttk.Checkbutton(
             frame, text=t("web_lookup_checkbox"), variable=self.web_lookup_var,
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        self.web_lookup_check.pack(anchor="w", pady=(4, 0))
 
         ttk.Label(
             frame, text=t("moderator_block_hint"),
             foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(8, 0))
+
+        # Applies both the mode-dependent (AI/Human) and free-only-dependent
+        # widget states right away, matching whatever was loaded from config.
+        self._refresh_moderator_widget_states()
+
+    def _refresh_moderator_widget_states(self):
+        """Single source of truth for which moderator-block widgets are
+        interactive right now — depends on BOTH the AI/Human mode and the
+        free-only checkbox, so the two conditions combine correctly
+        instead of one silently overriding the other."""
+        is_ai = self.moderator_mode_var.get() == "ai"
+        free_only = self.moderator_free_only_var.get()
+
+        self.moderator_model_combo.config(state=("readonly" if is_ai else "disabled"))
+        self.moderator_free_only_check.config(state=("normal" if is_ai else "disabled"))
+        self.participation_check.config(state=("normal" if is_ai else "disabled"))
+        self.moderator_summary_check.config(state=("normal" if is_ai else "disabled"))
+        # Web lookup needs BOTH conditions satisfied — AI mode AND not
+        # restricted to free models (the search plugin costs money
+        # regardless of whether the underlying model itself is free).
+        self.web_lookup_check.config(state=("normal" if (is_ai and not free_only) else "disabled"))
+
+    def _on_moderator_mode_changed(self):
+        """"Модель ведущего" and the other AI-only fields only matter in
+        AI mode — greyed out (not just visually, actually unclickable) in
+        Human mode, matching the model field's own "(если ИИ)" framing."""
+        self._refresh_moderator_widget_states()
+
+    def _on_moderator_free_only_toggled(self, persist=True):
+        """Switches the moderator model dropdown to the free-models pool
+        (or back to the full list), and — since OpenRouter's web search
+        plugin costs money regardless of whether the underlying model
+        itself is free — force-disables the web lookup checkbox while
+        this is on, so a "free" moderator setup can't quietly still cost
+        something via the search plugin."""
+        checked = self.moderator_free_only_var.get()
+        pool = self.config_data.get("free_model_ids_cache", []) if checked else self._all_known_model_ids()
+        current = self.moderator_model_var.get()
+        self.moderator_model_combo["values"] = _sorted_with_current(pool, current)
+
+        if checked:
+            self.web_lookup_var.set(False)
+
+        self._refresh_moderator_widget_states()
+
+        if persist:
+            self.config_data["moderator_free_only"] = checked
+            save_config(self.config_data)
+            logger.info(t("log_moderator_free_only_toggled", value=checked))
 
     def _all_known_model_ids(self):
         cache = self.config_data.get("family_options_cache", {}) or {}
@@ -749,6 +861,19 @@ class SettingsTab(ttk.Frame):
             padding=10,
         )
         frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        ttk.Checkbutton(
+            frame, text=t("use_families_checkbox"), variable=self.use_families_var,
+            command=self._on_use_families_toggled,
+        ).pack(anchor="w", pady=(0, 8))
+
+        if not self.use_families_var.get():
+            ttk.Label(
+                frame, text=t("families_disabled_note"),
+                foreground=theme.get_palette(get_theme_code())["muted_fg"],
+                wraplength=1000, justify="left",
+            ).pack(anchor="w")
+            return
 
         ttk.Label(
             frame, text=t("reasoning_intro_hint"),
@@ -816,6 +941,72 @@ class SettingsTab(ttk.Frame):
             self._protect_from_wheel(reasoning_combo)
             self.reasoning_vars[key] = reasoning_var
 
+    def _on_use_families_toggled(self):
+        """Applies immediately (like the language/theme switches) rather
+        than waiting for "Save Settings" — flipping this fundamentally
+        changes which widgets exist at all, so there's no sensible way
+        to preview the change without rebuilding right away."""
+        new_value = self.use_families_var.get()
+        if not new_value:
+            self._migrate_families_to_flat_slots()
+        self.config_data["use_families"] = new_value
+        save_config(self.config_data)
+        logger.info(t("log_use_families_toggled", value=new_value))
+        self.on_profile_switched()  # generic "rebuild everything" callback
+
+    def _migrate_families_to_flat_slots(self):
+        """Called right before switching families off. The 5 families
+        always land at FIXED positions 0-4 (matching FAMILIES' order:
+        Claude, ChatGPT, Grok, Gemini, Mistral) regardless of which ones
+        were checked — so the visual list order stays predictable and
+        doesn't reshuffle based on what happened to be selected. Indices
+        5-7 (the original "own" slots) are never touched here — they
+        already live there even in family mode, no data movement needed.
+
+        Only writes indices 0-4 if they're ALL still empty, so
+        re-toggling later never clobbers data someone has since typed
+        directly into those slots while in flat mode."""
+        custom_models = list(self.config_data.get("custom_models", []))
+        while len(custom_models) < MAX_FLAT_SLOTS:
+            custom_models.append({"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "off"})
+
+        family_area = custom_models[:MAX_FLAT_SLOTS - MAX_CUSTOM_MODELS]  # indices 0-4
+        if any((slot.get("id") or "").strip() for slot in family_area):
+            self.config_data["custom_models"] = custom_models
+            return  # already has data there — don't overwrite
+
+        for i, fam in enumerate(FAMILIES):
+            key = fam["key"]
+            model_id = self.family_combo_vars[key].get()
+            persona = self.persona_texts[key].get("1.0", "end").strip()
+            level_code = self._reasoning_label_to_code.get(
+                self.reasoning_vars[key].get(), DEFAULT_REASONING_LEVEL
+            )
+            custom_models[i] = {
+                "id": model_id, "label": fam["label"], "persona": persona,
+                "enabled": self.family_vars[key].get(), "reasoning_level": level_code,
+            }
+        self.config_data["custom_models"] = custom_models
+
+    def _current_slot_model_pool(self):
+        """Which cached ID list feeds the custom/flat slots' autocomplete
+        right now — free-only or the full list — based on the checkbox
+        (available in both family and flat mode)."""
+        if self.free_only_var.get():
+            return self.config_data.get("free_model_ids_cache", [])
+        return self.config_data.get("all_model_ids_cache", [])
+
+    def _on_free_only_toggled(self):
+        """Instant — both lists are already cached from the last
+        refresh, so no network call is needed to switch between them."""
+        self.config_data["custom_models_free_only"] = self.free_only_var.get()
+        save_config(self.config_data)
+        pool = self._current_slot_model_pool()
+        for slot in self.custom_slots:
+            current_id = slot["id_var"].get()
+            slot["id_combo"]["values"] = _sorted_with_current(pool, current_id)
+        logger.info(t("log_free_only_toggled", value=self.free_only_var.get()))
+
     def _refresh_family_options(self):
         api_key = self.api_key_var.get().strip()
         self.refresh_status_label.config(text=t("refreshing_models_ellipsis"))
@@ -823,20 +1014,21 @@ class SettingsTab(ttk.Frame):
 
         def worker():
             try:
-                options, all_ids = build_family_options(api_key or None)
+                options, all_ids, free_ids = build_family_options(api_key or None)
             except OpenRouterError as e:
                 logger.error(t("log_refresh_models_failed", error=e))
                 self.after(0, lambda: self.refresh_status_label.config(
                     text=t("refresh_error", error=e), foreground="#c62828"
                 ))
                 return
-            self.after(0, lambda: self._apply_family_options(options, all_ids))
+            self.after(0, lambda: self._apply_family_options(options, all_ids, free_ids))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _apply_family_options(self, options, all_ids):
+    def _apply_family_options(self, options, all_ids, free_ids):
         self.config_data["family_options_cache"] = options
         self.config_data["all_model_ids_cache"] = all_ids
+        self.config_data["free_model_ids_cache"] = free_ids
         timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
         self.config_data["family_options_updated_at"] = timestamp
         save_config(self.config_data)
@@ -848,23 +1040,25 @@ class SettingsTab(ttk.Frame):
         current_mod = self.moderator_model_var.get()
         self.moderator_model_combo["values"] = _sorted_with_current(all_ids, current_mod)
 
-        sorted_all_ids = sorted(all_ids)
+        # Flat/custom slots use whichever list matches the current
+        # "free models only" state — free_ids if checked, all_ids otherwise.
+        slot_pool = self._current_slot_model_pool()
         for slot in self.custom_slots:
             current_id = slot["id_var"].get()
-            slot["id_combo"]["values"] = _sorted_with_current(sorted_all_ids, current_id)
+            slot["id_combo"]["values"] = _sorted_with_current(slot_pool, current_id)
 
-        counts = ", ".join(f"{find_family(k)['label']} {len(v)}" for k, v in options.items())
         self.refresh_status_label.config(
-            text=t("models_updated_status", timestamp=timestamp, counts=counts, total=len(all_ids)),
+            text=t("models_updated_status", timestamp=timestamp, total=len(all_ids), free=len(free_ids)),
             foreground="#2e7d32",
         )
-        logger.info(t("log_models_updated", counts=counts, total=len(all_ids)))
+        logger.info(t("log_models_updated", total=len(all_ids), free=len(free_ids)))
 
     # ---------- Custom models ----------
 
     def _build_custom_models_block(self):
+        title_key = "custom_models_title" if self.use_families_var.get() else "flat_models_title"
         frame = ttk.LabelFrame(
-            self.content, text=t("custom_models_title", max=MAX_CUSTOM_MODELS), padding=10
+            self.content, text=t(title_key, max=self.custom_slot_count), padding=10
         )
         frame.pack(fill="both", expand=True, pady=(0, 10))
 
@@ -877,14 +1071,20 @@ class SettingsTab(ttk.Frame):
             anchor="w", pady=(0, 10)
         )
 
+        self.free_only_var = tk.BooleanVar(value=self.config_data.get("custom_models_free_only", False))
+        ttk.Checkbutton(
+            frame, text=t("free_only_checkbox"), variable=self.free_only_var,
+            command=self._on_free_only_toggled,
+        ).pack(anchor="w", pady=(0, 10))
+
         custom_config = self.config_data.get("custom_models", [])
-        while len(custom_config) < MAX_CUSTOM_MODELS:
+        while len(custom_config) < self.custom_slot_offset + self.custom_slot_count:
             custom_config.append({"id": "", "label": "", "persona": "", "enabled": False})
 
-        all_ids_cache = self.config_data.get("all_model_ids_cache", [])
+        all_ids_cache = self._current_slot_model_pool()
 
-        for index in range(MAX_CUSTOM_MODELS):
-            slot_data = custom_config[index]
+        for index in range(self.custom_slot_count):
+            slot_data = custom_config[self.custom_slot_offset + index]
             slot_frame = ttk.Frame(frame, relief="groove", padding=8)
             slot_frame.pack(fill="x", pady=4)
 
@@ -943,22 +1143,39 @@ class SettingsTab(ttk.Frame):
         doesn't touch self.config_data itself (that's up to the caller:
         _save / _save_as_new_profile, so "Save As" never touches the old
         active profile)."""
-        selected_families = [key for key, var in self.family_vars.items() if var.get()]
+        use_families = self.use_families_var.get()
 
-        family_model_choice = {}
-        personas = {}
-        reasoning_levels = {}
-        for key in self.family_vars:
-            family_model_choice[key] = self.family_combo_vars[key].get()
-            personas[key] = self.persona_texts[key].get("1.0", "end").strip()
-            reasoning_levels[key] = self._reasoning_label_to_code.get(
-                self.reasoning_vars[key].get(), DEFAULT_REASONING_LEVEL
-            )
+        if use_families:
+            selected_families = [key for key, var in self.family_vars.items() if var.get()]
+            family_model_choice = {}
+            personas = {}
+            reasoning_levels = {}
+            for key in self.family_vars:
+                family_model_choice[key] = self.family_combo_vars[key].get()
+                personas[key] = self.persona_texts[key].get("1.0", "end").strip()
+                reasoning_levels[key] = self._reasoning_label_to_code.get(
+                    self.reasoning_vars[key].get(), DEFAULT_REASONING_LEVEL
+                )
+        else:
+            # No family widgets exist in this mode — keep whatever was
+            # already saved untouched rather than overwriting with blanks,
+            # so switching back to family mode later restores it as-is.
+            selected_families = list(self.config_data.get("selected_families", []))
+            family_model_choice = dict(self.config_data.get("family_model_choice", {}))
+            personas = dict(self.config_data.get("personas", {}))
+            reasoning_levels = dict(self.config_data.get("reasoning_levels", {}))
 
-        seen_ids = {family_model_choice[k] for k in selected_families}
-        custom_models = []
+        seen_ids = {family_model_choice[k] for k in selected_families if k in family_model_choice} if use_families else set()
+
+        # custom_models is always stored as MAX_FLAT_SLOTS entries — only
+        # the slots actually visible right now (self.custom_slots) get
+        # overwritten; anything beyond that (the "other" mode's data)
+        # carries forward untouched, same reasoning as families above.
+        custom_models = list(self.config_data.get("custom_models", []))
+        while len(custom_models) < MAX_FLAT_SLOTS:
+            custom_models.append({"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "off"})
+
         custom_selected_ids = []
-
         for index, slot in enumerate(self.custom_slots):
             model_id = slot["id_var"].get().strip()
             label = slot["label_var"].get().strip()
@@ -968,10 +1185,10 @@ class SettingsTab(ttk.Frame):
                 slot["reasoning_var"].get(), DEFAULT_REASONING_LEVEL
             )
 
-            custom_models.append({
+            custom_models[self.custom_slot_offset + index] = {
                 "id": model_id, "label": label, "persona": persona,
                 "enabled": enabled, "reasoning_level": reasoning_level,
-            })
+            }
 
             if not enabled:
                 continue
@@ -984,7 +1201,7 @@ class SettingsTab(ttk.Frame):
             seen_ids.add(model_id)
             custom_selected_ids.append(model_id)
 
-        total_count = len(selected_families) + len(custom_selected_ids)
+        total_count = (len(selected_families) if use_families else 0) + len(custom_selected_ids)
         if total_count < MIN_MODELS:
             messagebox.showwarning(APP_TITLE, t("min_models_warning", min=MIN_MODELS))
             return None
@@ -1002,6 +1219,7 @@ class SettingsTab(ttk.Frame):
 
         return {
             "api_key": self.api_key_var.get().strip(),
+            "use_families": use_families,
             "selected_families": selected_families,
             "family_model_choice": family_model_choice,
             "personas": personas,
@@ -1485,6 +1703,15 @@ class ChatTab(ttk.Frame):
                                     # so without this the AI moderator could
                                     # keep picking "user" forever with no
                                     # natural stopping condition ever hit.
+        last_speaker_id = None  # the most recent participant with a
+                                    # successful, visible reply — excluded
+                                    # from the very next pick so the same
+                                    # model never appears twice in a row.
+                                    # This also covers the case where the
+                                    # turn in between silently failed (a
+                                    # 429, etc.), which would otherwise let
+                                    # the same model get picked again right
+                                    # after itself with nothing in between.
         loop_guard = 0
         loop_guard_limit = max(max_replies * 4, 40)  # absolute safety net:
                                     # guarantees the loop terminates even
@@ -1578,9 +1805,21 @@ class ChatTab(ttk.Frame):
             else:
                 self.ui_queue.put(("status", t("moderator_choosing_status"), None, None))
                 effective_allow_user = user_participation and not just_invited_user
+
+                # Excluded here (AI-mode only) so the moderator can't
+                # immediately repeat whoever just spoke — including when
+                # a turn in between silently failed. A human moderator
+                # isn't restricted this way; repeating a speaker on
+                # purpose is their call, not an oversight to guard against.
+                ai_candidate_pool = available_participants
+                if last_speaker_id is not None:
+                    without_last_speaker = [p for p in available_participants if p["id"] != last_speaker_id]
+                    if without_last_speaker:
+                        ai_candidate_pool = without_last_speaker
+
                 try:
                     decision, mod_usage = ask_moderator(
-                        api_key, moderator_model, topic, transcript, available_participants,
+                        api_key, moderator_model, topic, transcript, ai_candidate_pool,
                         effective_allow_user, replies_done, max_replies, is_final_reply,
                     )
                 except OpenRouterError as e:
@@ -1597,7 +1836,7 @@ class ChatTab(ttk.Frame):
                 task, reaction_type, wrap_up = decision["task"], decision["reaction_type"], decision["wrap_up"]
 
                 if next_id is None:
-                    next_id = pick_fallback_speaker(available_participants)
+                    next_id = pick_fallback_speaker(ai_candidate_pool)
                     logger.info(t("log_moderator_fallback", id=next_id))
 
                 # Guarantee a wrap-up on the last reply even if the
@@ -1675,6 +1914,7 @@ class ChatTab(ttk.Frame):
 
             speak_counts[next_id] = speak_counts.get(next_id, 0) + 1
             replies_done += 1
+            last_speaker_id = next_id
 
             self.ui_queue.put(("message", label, next_id, reply_shown))
             self.ui_queue.put(("cost", f"${total_cost:.4f}", str(budget), None))
@@ -1754,6 +1994,14 @@ class App(tk.Tk):
         theme.apply_theme(self, get_theme_code())
 
         self.title(WINDOW_TITLE)
+
+        # Layout-independent Ctrl+C/V/X/A for every Entry/Combobox/
+        # Spinbox/Text in the whole app at once — one registration here
+        # covers all current AND future widgets of these classes,
+        # including ones created after tab rebuilds (theme/profile/
+        # language switches), no per-widget wiring needed.
+        for widget_class in ("TEntry", "TCombobox", "TSpinbox", "Text"):
+            self.bind_class(widget_class, "<Control-Key>", _GENERIC_EDITABLE_HOTKEYS)
 
         icon_path = _resource_path("favicon.ico")
         if os.path.exists(icon_path):
