@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 AI Brainstorm — a desktop app for group brainstorming with several AI
-models via OpenRouter.
+models via OpenRouter, Requesty, or any compatible provider (see providers.py).
 
 Run:    python main.py
 Build:  pyinstaller --onefile --windowed --icon=favicon.ico --add-data "favicon.ico;." --name AIBrainstorm main.py
@@ -39,6 +39,7 @@ from api_client import (
 import i18n
 from i18n import t
 import theme
+from providers import PROVIDERS, DEFAULT_PROVIDER, get_provider, provider_ids_in_order
 
 logger = logging.getLogger("ai_brainstorm")
 logger.setLevel(logging.DEBUG)
@@ -72,8 +73,6 @@ MAX_STANDARD_MODELS = 5
 MAX_CUSTOM_MODELS = 3   # custom slots alongside families, when use_families=True
 MAX_FLAT_SLOTS = 8      # all-custom slots, when use_families=False (families ignored)
 MAX_MODELS = MAX_STANDARD_MODELS + MAX_CUSTOM_MODELS  # = 8, same total either way
-OPENROUTER_MODELS_URL = "https://openrouter.ai/models"
-OPENROUTER_REASONING_DOCS_URL = "https://openrouter.ai/docs/use-cases/reasoning-tokens"
 
 CODE_FENCE_RE = re.compile(r"```(?:\w+)?\n?(.*?)```", re.DOTALL)
 MD_INLINE_RE = re.compile(r"\*\*(.+?)\*\*|`([^`\n]+)`")
@@ -88,6 +87,17 @@ def _sorted_with_current(values, current):
     if current:
         pool.add(current)
     return sorted(pool)
+
+
+def _resolve_provider(config_data):
+    """Provider dict with base_url resolved — for "custom", the registry
+    has base_url=None (unknowable in advance), substituted here with
+    whatever the person typed into the URL field. Module-level (not a
+    method) since both SettingsTab and ChatTab need this."""
+    provider = dict(get_provider(config_data.get("api_provider", DEFAULT_PROVIDER)))
+    if provider.get("base_url") is None:
+        provider["base_url"] = config_data.get("custom_base_url", "").strip()
+    return provider
 
 
 def _make_link_label(parent, text, url):
@@ -394,6 +404,11 @@ class SettingsTab(ttk.Frame):
         self.custom_slots = []
 
         self.use_families_var = tk.BooleanVar(value=self.config_data.get("use_families", True))
+        if not self._current_provider().get("uses_families", True):
+            # Custom (and any future provider without a stable vendor-
+            # prefix naming convention) has no sensible "family" concept
+            # at all — force flat mode, the checkbox itself is hidden.
+            self.use_families_var.set(False)
         self.custom_slot_count = MAX_CUSTOM_MODELS if self.use_families_var.get() else MAX_FLAT_SLOTS
         # In family mode the 3 "own" slots are stored at indices 5-7 (not
         # 0-2) — so switching to flat mode can place the 5 families at
@@ -630,6 +645,36 @@ class SettingsTab(ttk.Frame):
         frame = ttk.LabelFrame(self.content, text=t("api_key_block_title"), padding=10)
         frame.pack(fill="x", pady=(0, 10))
 
+        provider_row = ttk.Frame(frame)
+        provider_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(provider_row, text=t("api_provider_label")).pack(side="left")
+
+        self._provider_name_to_id = {p["name"]: pid for pid, p in PROVIDERS.items()}
+        provider_names = [PROVIDERS[pid]["name"] for pid in provider_ids_in_order()]
+        current_provider_id = self.config_data.get("api_provider", DEFAULT_PROVIDER)
+        current_provider_name = get_provider(current_provider_id)["name"]
+        self.api_provider_var = tk.StringVar(value=current_provider_name)
+        provider_combo = ttk.Combobox(
+            provider_row, textvariable=self.api_provider_var, values=provider_names,
+            width=20, state="readonly",
+        )
+        provider_combo.pack(side="left", padx=(8, 0))
+        self._protect_from_wheel(provider_combo)
+        provider_combo.bind("<<ComboboxSelected>>", self._on_api_provider_selected)
+
+        self.custom_base_url_var = tk.StringVar(value=self.config_data.get("custom_base_url", ""))
+        if current_provider_id == "custom":
+            url_row = ttk.Frame(frame)
+            url_row.pack(fill="x", pady=(0, 8))
+            ttk.Label(url_row, text=t("custom_base_url_label")).pack(side="left")
+            ttk.Entry(url_row, textvariable=self.custom_base_url_var, width=45).pack(
+                side="left", padx=(8, 0)
+            )
+            ttk.Label(
+                frame, text=t("custom_provider_warning"),
+                foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
+            ).pack(anchor="w", pady=(0, 8))
+
         self.api_key_var = tk.StringVar(value=self.config_data.get("api_key", ""))
         self.show_key_var = tk.BooleanVar(value=False)
 
@@ -645,9 +690,12 @@ class SettingsTab(ttk.Frame):
 
         buttons_row = ttk.Frame(frame)
         buttons_row.pack(fill="x", pady=(8, 0))
-        ttk.Button(
-            buttons_row, text=t("check_balance_button"), command=self._check_key_balance
-        ).pack(side="left")
+        # Not every provider has a balance-check endpoint (see providers.py) —
+        # hidden entirely rather than shown-but-broken when unsupported.
+        if get_provider(current_provider_id).get("has_key_info"):
+            ttk.Button(
+                buttons_row, text=t("check_balance_button"), command=self._check_key_balance
+            ).pack(side="left")
         ttk.Button(
             buttons_row, text=t("refresh_models_button"), command=self._refresh_family_options
         ).pack(side="left", padx=(10, 0))
@@ -667,16 +715,44 @@ class SettingsTab(ttk.Frame):
             foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(4, 0))
 
+    def _current_provider(self):
+        return _resolve_provider(self.config_data)
+
+    def _on_api_provider_selected(self, _event=None):
+        name = self.api_provider_var.get()
+        provider_id = self._provider_name_to_id.get(name)
+        if not provider_id or provider_id == self.config_data.get("api_provider", DEFAULT_PROVIDER):
+            return
+        self.config_data["api_provider"] = provider_id
+        # Cached model lists belong to the OLD provider's catalog — stale
+        # and possibly nonsensical for the new one (different IDs
+        # entirely), so clear them rather than risk showing garbage;
+        # "Refresh Model List" repopulates them for the new provider.
+        self.config_data["family_options_cache"] = {}
+        self.config_data["all_model_ids_cache"] = []
+        self.config_data["free_model_ids_cache"] = []
+        self.config_data["family_options_updated_at"] = ""
+        if not get_provider(provider_id).get("has_pricing_data"):
+            # Otherwise the checkbox controlling this would be stuck ON
+            # with nothing to show (empty free-models cache) and no
+            # visible widget for this provider to turn it back off with.
+            self.config_data["custom_models_free_only"] = False
+            self.config_data["moderator_free_only"] = False
+        save_config(self.config_data)
+        logger.info(t("log_api_provider_switched", provider=provider_id))
+        self.on_profile_switched()  # rebuild — gated UI (balance button, free-only, web lookup) may change
+
     def _check_key_balance(self):
         api_key = self.api_key_var.get().strip()
         if not api_key:
             messagebox.showwarning(APP_TITLE, t("enter_api_key_first"))
             return
         self.balance_label.config(text=t("checking_ellipsis"))
+        base_url = self._current_provider()["base_url"]
 
         def worker():
             try:
-                info = get_key_info(api_key)
+                info = get_key_info(api_key, base_url=base_url)
             except OpenRouterError as e:
                 self.after(0, lambda: self.balance_label.config(
                     text=t("error_prefix", error=e), foreground="#c62828"
@@ -701,13 +777,19 @@ class SettingsTab(ttk.Frame):
     # ---------- Budget ----------
 
     def _build_budget_block(self):
+        self.budget_var = tk.StringVar(
+            value=str(self.config_data.get("session_budget_usd", 0.5))
+        )
+        if not self._current_provider().get("has_cost_tracking", True):
+            # No point showing a $ budget for a provider that never
+            # reports a $ cost per request (typical for local/self-hosted
+            # servers) — the field would just sit there doing nothing.
+            return
+
         frame = ttk.LabelFrame(self.content, text=t("budget_block_title"), padding=10)
         frame.pack(fill="x", pady=(0, 10))
 
         ttk.Label(frame, text=t("session_budget_label")).pack(side="left")
-        self.budget_var = tk.StringVar(
-            value=str(self.config_data.get("session_budget_usd", 0.5))
-        )
         ttk.Entry(frame, textvariable=self.budget_var, width=8).pack(
             side="left", padx=(6, 0)
         )
@@ -760,7 +842,8 @@ class SettingsTab(ttk.Frame):
             frame, text=t("moderator_free_only_checkbox"), variable=self.moderator_free_only_var,
             command=self._on_moderator_free_only_toggled,
         )
-        self.moderator_free_only_check.pack(anchor="w", pady=(6, 0))
+        if self._current_provider().get("has_pricing_data"):
+            self.moderator_free_only_check.pack(anchor="w", pady=(6, 0))
 
         self.participation_var = tk.BooleanVar(
             value=self.config_data.get("user_participation", False)
@@ -784,7 +867,8 @@ class SettingsTab(ttk.Frame):
         self.web_lookup_check = ttk.Checkbutton(
             frame, text=t("web_lookup_checkbox"), variable=self.web_lookup_var,
         )
-        self.web_lookup_check.pack(anchor="w", pady=(4, 0))
+        if self._current_provider().get("has_web_plugin"):
+            self.web_lookup_check.pack(anchor="w", pady=(4, 0))
 
         ttk.Label(
             frame, text=t("moderator_block_hint"),
@@ -862,14 +946,19 @@ class SettingsTab(ttk.Frame):
         )
         frame.pack(fill="both", expand=True, pady=(0, 10))
 
-        ttk.Checkbutton(
-            frame, text=t("use_families_checkbox"), variable=self.use_families_var,
-            command=self._on_use_families_toggled,
-        ).pack(anchor="w", pady=(0, 8))
+        if self._current_provider().get("uses_families", True):
+            ttk.Checkbutton(
+                frame, text=t("use_families_checkbox"), variable=self.use_families_var,
+                command=self._on_use_families_toggled,
+            ).pack(anchor="w", pady=(0, 8))
 
         if not self.use_families_var.get():
+            note_key = (
+                "families_disabled_note" if self._current_provider().get("uses_families", True)
+                else "families_unavailable_note"
+            )
             ttk.Label(
-                frame, text=t("families_disabled_note"),
+                frame, text=t(note_key),
                 foreground=theme.get_palette(get_theme_code())["muted_fg"],
                 wraplength=1000, justify="left",
             ).pack(anchor="w")
@@ -879,9 +968,11 @@ class SettingsTab(ttk.Frame):
             frame, text=t("reasoning_intro_hint"),
             foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(0, 2))
-        _make_link_label(frame, OPENROUTER_REASONING_DOCS_URL, OPENROUTER_REASONING_DOCS_URL).pack(
-            anchor="w", pady=(0, 8)
-        )
+        reasoning_docs_url = self._current_provider().get("reasoning_docs_url")
+        if reasoning_docs_url:
+            _make_link_label(frame, reasoning_docs_url, reasoning_docs_url).pack(
+                anchor="w", pady=(0, 8)
+            )
         ttk.Label(
             frame, text=t("reasoning_budget_hint"),
             foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
@@ -1007,14 +1098,28 @@ class SettingsTab(ttk.Frame):
             slot["id_combo"]["values"] = _sorted_with_current(pool, current_id)
         logger.info(t("log_free_only_toggled", value=self.free_only_var.get()))
 
+    def _live_base_url(self):
+        """Like _current_provider()["base_url"], but for "custom" reads
+        the URL field's CURRENT value (possibly not yet saved) instead
+        of the last-saved one — so "Refresh Model List" works with
+        whatever's typed right now, same as the API key field already does."""
+        provider = get_provider(self.config_data.get("api_provider", DEFAULT_PROVIDER))
+        if provider.get("base_url") is None:
+            return self.custom_base_url_var.get().strip()
+        return provider["base_url"]
+
     def _refresh_family_options(self):
         api_key = self.api_key_var.get().strip()
+        base_url = self._live_base_url()
+        if not base_url:
+            messagebox.showwarning(APP_TITLE, t("enter_custom_url_first"))
+            return
         self.refresh_status_label.config(text=t("refreshing_models_ellipsis"))
         logger.info(t("log_refresh_models_requested"))
 
         def worker():
             try:
-                options, all_ids, free_ids = build_family_options(api_key or None)
+                options, all_ids, free_ids = build_family_options(api_key or None, base_url=base_url)
             except OpenRouterError as e:
                 logger.error(t("log_refresh_models_failed", error=e))
                 self.after(0, lambda: self.refresh_status_label.config(
@@ -1047,11 +1152,14 @@ class SettingsTab(ttk.Frame):
             current_id = slot["id_var"].get()
             slot["id_combo"]["values"] = _sorted_with_current(slot_pool, current_id)
 
+        has_pricing_data = self._current_provider().get("has_pricing_data")
+        status_key = "models_updated_status" if has_pricing_data else "models_updated_status_no_pricing"
         self.refresh_status_label.config(
-            text=t("models_updated_status", timestamp=timestamp, total=len(all_ids), free=len(free_ids)),
+            text=t(status_key, timestamp=timestamp, total=len(all_ids), free=len(free_ids)),
             foreground="#2e7d32",
         )
-        logger.info(t("log_models_updated", total=len(all_ids), free=len(free_ids)))
+        log_key = "log_models_updated" if has_pricing_data else "log_models_updated_no_pricing"
+        logger.info(t(log_key, total=len(all_ids), free=len(free_ids)))
 
     # ---------- Custom models ----------
 
@@ -1062,20 +1170,24 @@ class SettingsTab(ttk.Frame):
         )
         frame.pack(fill="both", expand=True, pady=(0, 10))
 
+        provider = self._current_provider()
         info = ttk.Label(
-            frame, text=t("custom_models_info"),
+            frame, text=t("custom_models_info", provider=provider["name"]),
             foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
         )
         info.pack(anchor="w", pady=(0, 2))
-        _make_link_label(frame, OPENROUTER_MODELS_URL, OPENROUTER_MODELS_URL).pack(
-            anchor="w", pady=(0, 10)
-        )
+        models_docs_url = provider.get("models_docs_url")
+        if models_docs_url:
+            _make_link_label(frame, models_docs_url, models_docs_url).pack(
+                anchor="w", pady=(0, 10)
+            )
 
         self.free_only_var = tk.BooleanVar(value=self.config_data.get("custom_models_free_only", False))
-        ttk.Checkbutton(
-            frame, text=t("free_only_checkbox"), variable=self.free_only_var,
-            command=self._on_free_only_toggled,
-        ).pack(anchor="w", pady=(0, 10))
+        if self._current_provider().get("has_pricing_data"):
+            ttk.Checkbutton(
+                frame, text=t("free_only_checkbox"), variable=self.free_only_var,
+                command=self._on_free_only_toggled,
+            ).pack(anchor="w", pady=(0, 10))
 
         custom_config = self.config_data.get("custom_models", [])
         while len(custom_config) < self.custom_slot_offset + self.custom_slot_count:
@@ -1116,15 +1228,31 @@ class SettingsTab(ttk.Frame):
 
             reasoning_frame = ttk.Frame(slot_frame)
             reasoning_frame.grid(row=2, column=3, sticky="nw", padx=(6, 0), pady=(4, 0))
-            ttk.Label(reasoning_frame, text=t("reasoning_label")).pack(anchor="w")
-            slot_current_code = slot_data.get("reasoning_level", DEFAULT_REASONING_LEVEL)
-            reasoning_var = tk.StringVar(value=reasoning_level_label(slot_current_code))
-            slot_reasoning_combo = ttk.Combobox(
-                reasoning_frame, textvariable=reasoning_var, values=self._reasoning_labels,
-                width=12, state="readonly",
-            )
-            slot_reasoning_combo.pack(anchor="w", pady=(2, 0))
-            self._protect_from_wheel(slot_reasoning_combo)
+
+            if provider.get("reasoning_format") == "raw":
+                # No guessable shape for an arbitrary server (confirmed
+                # OpenRouter/Requesty/LM Studio already differ from each
+                # other) — the person writes the exact JSON fragment
+                # themselves, per model (local servers vary this model
+                # to model). Empty = send nothing reasoning-related.
+                ttk.Label(reasoning_frame, text=t("reasoning_raw_label")).pack(anchor="w")
+                reasoning_raw_var = tk.StringVar(value=slot_data.get("reasoning_raw", ""))
+                reasoning_raw_entry = ttk.Entry(
+                    reasoning_frame, textvariable=reasoning_raw_var, width=24
+                )
+                reasoning_raw_entry.pack(anchor="w", pady=(2, 0))
+                reasoning_var = None
+            else:
+                ttk.Label(reasoning_frame, text=t("reasoning_label")).pack(anchor="w")
+                slot_current_code = slot_data.get("reasoning_level", DEFAULT_REASONING_LEVEL)
+                reasoning_var = tk.StringVar(value=reasoning_level_label(slot_current_code))
+                slot_reasoning_combo = ttk.Combobox(
+                    reasoning_frame, textvariable=reasoning_var, values=self._reasoning_labels,
+                    width=12, state="readonly",
+                )
+                slot_reasoning_combo.pack(anchor="w", pady=(2, 0))
+                self._protect_from_wheel(slot_reasoning_combo)
+                reasoning_raw_var = None
 
             self.custom_slots.append({
                 "enabled_var": enabled_var,
@@ -1132,7 +1260,8 @@ class SettingsTab(ttk.Frame):
                 "id_combo": id_combo,
                 "label_var": label_var,
                 "persona_text": persona_text,
-                "reasoning_var": reasoning_var,
+                "reasoning_var": reasoning_var,          # None when reasoning_format == "raw"
+                "reasoning_raw_var": reasoning_raw_var,  # None otherwise
             })
 
     # ---------- Save ----------
@@ -1165,7 +1294,14 @@ class SettingsTab(ttk.Frame):
             personas = dict(self.config_data.get("personas", {}))
             reasoning_levels = dict(self.config_data.get("reasoning_levels", {}))
 
-        seen_ids = {family_model_choice[k] for k in selected_families if k in family_model_choice} if use_families else set()
+        # Only tracks FAMILY selections — custom slots are allowed to
+        # duplicate each other on purpose (same model, different
+        # personas — each gets a unique participant_id under the hood,
+        # see models_catalog.build_full_catalog), but still can't reuse
+        # a model already claimed by a family: families have their own,
+        # separate uniqueness guarantee (one checkbox per family) that
+        # a custom slot shouldn't be able to silently collide with.
+        family_ids_in_use = {family_model_choice[k] for k in selected_families if k in family_model_choice} if use_families else set()
 
         # custom_models is always stored as MAX_FLAT_SLOTS entries — only
         # the slots actually visible right now (self.custom_slots) get
@@ -1181,13 +1317,26 @@ class SettingsTab(ttk.Frame):
             label = slot["label_var"].get().strip()
             persona = slot["persona_text"].get("1.0", "end").strip()
             enabled = slot["enabled_var"].get()
-            reasoning_level = self._reasoning_label_to_code.get(
-                slot["reasoning_var"].get(), DEFAULT_REASONING_LEVEL
-            )
 
-            custom_models[self.custom_slot_offset + index] = {
+            storage_index = self.custom_slot_offset + index
+            existing_slot = custom_models[storage_index] if storage_index < len(custom_models) else {}
+
+            if slot["reasoning_var"] is not None:
+                reasoning_level = self._reasoning_label_to_code.get(
+                    slot["reasoning_var"].get(), DEFAULT_REASONING_LEVEL
+                )
+                # No raw-JSON widget exists for this slot right now (the
+                # active provider isn't "raw") — keep whatever was saved
+                # for it untouched, don't lose it just because it's hidden.
+                reasoning_raw = existing_slot.get("reasoning_raw", "")
+            else:
+                reasoning_raw = slot["reasoning_raw_var"].get().strip()
+                reasoning_level = existing_slot.get("reasoning_level", "off")
+
+            custom_models[storage_index] = {
                 "id": model_id, "label": label, "persona": persona,
                 "enabled": enabled, "reasoning_level": reasoning_level,
+                "reasoning_raw": reasoning_raw,
             }
 
             if not enabled:
@@ -1195,10 +1344,9 @@ class SettingsTab(ttk.Frame):
             if not model_id:
                 messagebox.showwarning(APP_TITLE, t("custom_slot_missing_id", n=index + 1))
                 return None
-            if model_id in seen_ids:
-                messagebox.showwarning(APP_TITLE, t("custom_slot_duplicate_id", id=model_id, n=index + 1))
+            if model_id in family_ids_in_use:
+                messagebox.showwarning(APP_TITLE, t("custom_slot_duplicates_family", id=model_id, n=index + 1))
                 return None
-            seen_ids.add(model_id)
             custom_selected_ids.append(model_id)
 
         total_count = (len(selected_families) if use_families else 0) + len(custom_selected_ids)
@@ -1219,6 +1367,7 @@ class SettingsTab(ttk.Frame):
 
         return {
             "api_key": self.api_key_var.get().strip(),
+            "custom_base_url": self.custom_base_url_var.get().strip(),
             "use_families": use_families,
             "selected_families": selected_families,
             "family_model_choice": family_model_choice,
@@ -1234,9 +1383,12 @@ class SettingsTab(ttk.Frame):
         }
 
     def _save(self):
+        """Returns True on success, False if the form didn't validate
+        (a warning was already shown by _collect_form()) — used both by
+        the "Save Settings" button and by ChatTab's auto-save-before-start."""
         data = self._collect_form()
         if data is None:
-            return
+            return False
         self.config_data.update(data)
         save_config(self.config_data)
         set_debug_tab_enabled(self.debug_tab_var.get())  # app-wide, not profile data
@@ -1249,14 +1401,16 @@ class SettingsTab(ttk.Frame):
         self.status_label.config(text=t("saved_confirmation"))
         self.after(2000, lambda: self.status_label.config(text=""))
         self.on_saved()
+        return True
 
 
 class ChatTab(ttk.Frame):
     """Brainstorm tab: topic, moderator, discussion log, intervention."""
 
-    def __init__(self, parent, config):
+    def __init__(self, parent, config, save_settings_callback=None):
         super().__init__(parent, padding=12)
         self.config_data = config
+        self.save_settings_callback = save_settings_callback
         self.ui_queue = queue.Queue()
         self.worker_thread = None
         self.export_log = []  # [(speaker_label, tag, raw_text), ...] — for honest .md/.txt export
@@ -1320,7 +1474,8 @@ class ChatTab(ttk.Frame):
         self.status_var = tk.StringVar(value="")
         ttk.Label(status_row, textvariable=self.status_var, foreground=theme.get_palette(get_theme_code())["muted_fg"]).pack(side="left")
         self.cost_var = tk.StringVar(value="")
-        ttk.Label(status_row, textvariable=self.cost_var, foreground="#2e7d32").pack(side="right")
+        if _resolve_provider(self.config_data).get("has_cost_tracking", True):
+            ttk.Label(status_row, textvariable=self.cost_var, foreground="#2e7d32").pack(side="right")
 
     # ---------- Speaker-selection / intervention panel ----------
 
@@ -1357,7 +1512,7 @@ class ChatTab(ttk.Frame):
             for participant in payload["participants"]:
                 ttk.Button(
                     btn_row, text=participant["label"],
-                    command=lambda pid=participant["id"]: choose(pid),
+                    command=lambda pid=participant["participant_id"]: choose(pid),
                 ).pack(side="left", padx=4, pady=2)
             if payload.get("allow_user"):
                 ttk.Button(
@@ -1477,7 +1632,7 @@ class ChatTab(ttk.Frame):
     def _ensure_model_tags(self, full_catalog):
         for model in full_catalog:
             self.chat_log.tag_config(
-                model["id"], foreground=model["color"], font=("Segoe UI", 10, "bold")
+                model["participant_id"], foreground=model["color"], font=("Segoe UI", 10, "bold")
             )
 
     def _insert_inline_formatted(self, text):
@@ -1610,12 +1765,26 @@ class ChatTab(ttk.Frame):
         logger.info(t("log_intervene_requested"))
 
     def _start_brainstorm(self):
+        # Auto-save Settings first — the two tabs share the same
+        # config_data dict, but only Settings' own widgets hold
+        # whatever's currently typed there; without this, clicking
+        # "Start" right after editing Settings (without remembering to
+        # click "Save Settings" first) would silently start with the
+        # OLD saved values instead. If the form doesn't validate (e.g.
+        # a missing model ID), the warning is already shown by Settings'
+        # own _save() — don't start with stale/inconsistent data either way.
+        if self.save_settings_callback and not self.save_settings_callback():
+            return
+
         api_key = self.config_data.get("api_key", "")
         full_catalog = build_full_catalog(self.config_data)
         topic = self.topic_text.get("1.0", "end").strip()
 
         if not api_key:
             messagebox.showwarning(APP_TITLE, t("set_api_key_first"))
+            return
+        if self.config_data.get("api_provider") == "custom" and not self.config_data.get("custom_base_url", "").strip():
+            messagebox.showwarning(APP_TITLE, t("enter_custom_url_first"))
             return
         if len(full_catalog) < MIN_MODELS:
             messagebox.showwarning(APP_TITLE, t("select_min_models_in_settings", min=MIN_MODELS))
@@ -1638,6 +1807,9 @@ class ChatTab(ttk.Frame):
         user_participation = self.config_data.get("user_participation", False)
         moderator_summary = self.config_data.get("moderator_summary", False)
         moderator_web_lookup = self.config_data.get("moderator_web_lookup", False)
+        current_provider = _resolve_provider(self.config_data)
+        base_url = current_provider["base_url"]
+        reasoning_format = current_provider.get("reasoning_format", "tokens")
 
         # Persist the current "max replies" value so it's picked up next
         # run too, same as other settings.
@@ -1668,21 +1840,22 @@ class ChatTab(ttk.Frame):
             target=self._run_worker,
             args=(api_key, full_catalog, topic, max_replies, budget,
                   moderator_mode, moderator_model, user_participation, moderator_summary,
-                  moderator_web_lookup),
+                  moderator_web_lookup, base_url, reasoning_format),
             daemon=True,
         )
         self.worker_thread.start()
 
     def _run_worker(self, api_key, full_catalog, topic, max_replies, budget,
                      moderator_mode, moderator_model, user_participation, moderator_summary,
-                     moderator_web_lookup):
+                     moderator_web_lookup, base_url, reasoning_format):
         """Runs in the background thread — doesn't block the UI."""
+        current_provider = _resolve_provider(self.config_data)
         transcript_lines = []
         total_cost = 0.0
         pending_moderator_cost = 0.0  # accumulates, shown together with the next visible reply
         replies_done = 0
         cost_unknown_calls = 0
-        speak_counts = {p["id"]: 0 for p in full_catalog}
+        speak_counts = {p["participant_id"]: 0 for p in full_catalog}
         unavailable_until = {}  # model_id -> time.time() until which it's considered unavailable
         finish_reason = t("discussion_finished")
 
@@ -1695,7 +1868,7 @@ class ChatTab(ttk.Frame):
 
         def pick_fallback_speaker(pool):
             pool = pool or full_catalog
-            return min(pool, key=lambda p: speak_counts[p["id"]])["id"]
+            return min(pool, key=lambda p: speak_counts[p["participant_id"]])["participant_id"]
 
         just_invited_user = False  # prevents the moderator from inviting
                                     # the user two turns in a row — user
@@ -1721,7 +1894,9 @@ class ChatTab(ttk.Frame):
         if moderator_web_lookup:
             self.ui_queue.put(("status", t("status_web_lookup"), None, None))
             try:
-                lookup_text, lookup_usage = ask_moderator_web_lookup(api_key, moderator_model, topic)
+                lookup_text, lookup_usage = ask_moderator_web_lookup(
+                    api_key, moderator_model, topic, base_url=base_url, reasoning_format=reasoning_format,
+                )
                 lookup_cost = lookup_usage.get("cost")
                 lookup_shown = lookup_text
                 if isinstance(lookup_cost, (int, float)):
@@ -1813,7 +1988,9 @@ class ChatTab(ttk.Frame):
                 # purpose is their call, not an oversight to guard against.
                 ai_candidate_pool = available_participants
                 if last_speaker_id is not None:
-                    without_last_speaker = [p for p in available_participants if p["id"] != last_speaker_id]
+                    without_last_speaker = [
+                        p for p in available_participants if p["participant_id"] != last_speaker_id
+                    ]
                     if without_last_speaker:
                         ai_candidate_pool = without_last_speaker
 
@@ -1821,6 +1998,7 @@ class ChatTab(ttk.Frame):
                     decision, mod_usage = ask_moderator(
                         api_key, moderator_model, topic, transcript, ai_candidate_pool,
                         effective_allow_user, replies_done, max_replies, is_final_reply,
+                        base_url=base_url, reasoning_format=reasoning_format,
                     )
                 except OpenRouterError as e:
                     logger.error(t("log_moderator_error", error=e))
@@ -1866,6 +2044,7 @@ class ChatTab(ttk.Frame):
             label = model_info["label"]
             persona = model_info["persona"]
             reasoning_max_tokens = model_info.get("reasoning_max_tokens")
+            reasoning_raw = model_info.get("reasoning_raw")
 
             self.ui_queue.put(("status", t("model_preparing_status", label=label), None, None))
 
@@ -1883,14 +2062,19 @@ class ChatTab(ttk.Frame):
 
             try:
                 reply, usage = ask_model(
-                    api_key, next_id, persona, user_prompt,
-                    reasoning_max_tokens=reasoning_max_tokens,
+                    api_key, model_info["id"], persona, user_prompt,
+                    reasoning_max_tokens=reasoning_max_tokens, base_url=base_url,
+                    reasoning_format=reasoning_format, reasoning_raw=reasoning_raw,
                 )
             except OpenRouterError as e:
                 # Not shown in chat — the moderator will just pick someone
                 # else right away, and the reason stays visible in the "Log" tab.
                 logger.warning(t("log_model_unavailable", id=next_id, error=e))
-                mark_unavailable(next_id)
+                # Real model id, not participant_id — if this model is
+                # rate-limited/erroring, EVERY duplicate slot using the
+                # same underlying model shares that same cooldown, not
+                # just the one that happened to be picked this time.
+                mark_unavailable(model_info["id"])
                 transcript_lines.append(t("transcript_skipped_unavailable", label=label))
                 continue
 
@@ -1928,7 +2112,8 @@ class ChatTab(ttk.Frame):
             try:
                 summary_text, summary_usage = ask_model(
                     api_key, moderator_model, summary_system, summary_user,
-                    max_tokens=500, reasoning_max_tokens=None,
+                    max_tokens=500, reasoning_max_tokens=None, base_url=base_url,
+                    reasoning_format=reasoning_format,
                 )
                 summary_cost = summary_usage.get("cost")
                 if isinstance(summary_cost, (int, float)):
@@ -1941,7 +2126,7 @@ class ChatTab(ttk.Frame):
             except OpenRouterError as e:
                 logger.warning(t("log_summary_failed", error=e))
 
-        if cost_unknown_calls:
+        if cost_unknown_calls and current_provider.get("has_cost_tracking", True):
             finish_reason += t("unknown_cost_note", count=cost_unknown_calls)
         logger.info(t("log_session_finished", reason=finish_reason, total=f"{total_cost:.4f}"))
         self.ui_queue.put(("finished", finish_reason, None, None))
@@ -2052,7 +2237,10 @@ class App(tk.Tk):
         self._build_tabs()
 
     def _build_tabs(self):
-        self.chat_tab = ChatTab(self.notebook, self.config_data)
+        self.chat_tab = ChatTab(
+            self.notebook, self.config_data,
+            save_settings_callback=lambda: self.settings_tab._save(),
+        )
         self.settings_tab = SettingsTab(
             self.notebook, self.config_data,
             on_saved=self._on_settings_saved,

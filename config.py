@@ -19,6 +19,7 @@ import json
 import os
 
 from models_catalog import MODERATOR_DEFAULT_MODEL
+from providers import DEFAULT_PROVIDER
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".ai_brainstorm")
 PROFILES_DIR = os.path.join(CONFIG_DIR, "profiles")
@@ -38,13 +39,20 @@ def _empty_custom_slots():
     # Independent dicts — must not be the same object, or editing one
     # slot would affect all others.
     return [
-        {"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "off"}
+        {
+            "id": "", "label": "", "persona": "", "enabled": False,
+            "reasoning_level": "off",  # used by providers with a translatable format (tokens/effort)
+            "reasoning_raw": "",       # used by the "custom" provider — exact JSON fragment, per slot,
+                                       # since local servers vary the reasoning shape model to model
+        }
         for _ in range(MAX_CUSTOM_SLOTS_STORED)
     ]
 
 
 DEFAULT_CONFIG = {
     "api_key": "",
+    "api_provider": DEFAULT_PROVIDER,
+    "custom_base_url": "",          # only used when api_provider == "custom" — unknowable in advance
     "use_families": True,          # False = ignore families entirely, use all 8 custom_models slots
     "selected_families": [],
     "family_model_choice": {},     # {family_key: chosen model_id}
@@ -157,9 +165,13 @@ def _normalize(data):
     slots = merged.get("custom_models") or []
     slots = list(slots)[:MAX_CUSTOM_SLOTS_STORED]
     while len(slots) < MAX_CUSTOM_SLOTS_STORED:
-        slots.append({"id": "", "label": "", "persona": "", "enabled": False, "reasoning_level": "off"})
+        slots.append({
+            "id": "", "label": "", "persona": "", "enabled": False,
+            "reasoning_level": "off", "reasoning_raw": "",
+        })
     for slot in slots:
         slot.setdefault("reasoning_level", "off")
+        slot.setdefault("reasoning_raw", "")
     merged["custom_models"] = slots
 
     return merged

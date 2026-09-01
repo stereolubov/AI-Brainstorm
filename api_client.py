@@ -12,11 +12,12 @@ import urllib.error
 
 from models_catalog import FAMILIES
 from i18n import t
+from providers import get_provider, DEFAULT_PROVIDER
 
-CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
-KEY_INFO_URL = "https://openrouter.ai/api/v1/key"
-MODELS_LIST_URL = "https://openrouter.ai/api/v1/models"
-TIMEOUT_SECONDS = 60
+DEFAULT_BASE_URL = get_provider(DEFAULT_PROVIDER)["base_url"]
+TIMEOUT_SECONDS = 180  # generous — local reasoning models on modest hardware can genuinely
+                        # take a couple of minutes; a longer ceiling costs nothing for fast
+                        # cloud providers (they return well before it's ever reached)
 DEFAULT_MAX_TOKENS = 800  # generous margin so a reply doesn't get cut off mid-sentence
 
 logger = logging.getLogger("ai_brainstorm.api_client")
@@ -55,18 +56,61 @@ def _request(url, api_key=None, method="GET", payload=None):
     except urllib.error.URLError as e:
         logger.error(t("log_url_error", url=url, reason=e.reason))
         raise OpenRouterError(t("network_error", reason=e.reason)) from e
+    except TimeoutError as e:
+        # NOT a subclass of urllib.error.URLError — a read that times out
+        # mid-response (as opposed to failing to connect at all) raises
+        # this directly from the socket layer, bypassing urllib's own
+        # error wrapping entirely. Confirmed live: a local reasoning
+        # model that took longer than the old 60s ceiling to finish
+        # generating crashed the worker thread with an unhandled
+        # TimeoutError instead of being treated as a normal API failure.
+        logger.error(t("log_timeout_error", url=url, seconds=TIMEOUT_SECONDS))
+        raise OpenRouterError(t("timeout_error", seconds=TIMEOUT_SECONDS)) from e
+
+
+# Maps our fixed token-budget levels (see models_catalog.REASONING_LEVELS)
+# to the effort words that "effort"-style providers (Requesty) expect —
+# their API takes "low"/"medium"/"high"/"none", not a raw token count.
+# "none"/"min" are documented Requesty synonyms that disable/minimize
+# reasoning across all supported models, so that's what an absent or
+# zero budget maps to.
+_TOKENS_TO_EFFORT = {
+    None: "none",
+    0: "none",
+    1024: "low",
+    4096: "medium",
+    16000: "high",
+}
 
 
 def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_MAX_TOKENS,
-              reasoning_max_tokens=None, web_search_max_results=None):
+              reasoning_max_tokens=None, web_search_max_results=None, base_url=DEFAULT_BASE_URL,
+              reasoning_format="tokens", reasoning_raw=None):
     """
-    Sends a single chat request to `model_id` via OpenRouter.
+    Sends a single chat request to `model_id` via the given provider's
+    OpenAI-compatible chat completions endpoint (base_url + "/chat/completions").
 
-    reasoning_max_tokens: None/0 disables reasoning entirely
-    (payload["reasoning"] = {"enabled": False}); a positive number sets a
-    token budget for hidden reasoning before the visible reply
-    (payload["reasoning"] = {"max_tokens": N}). Models without reasoning
-    support just ignore the field, no error.
+    reasoning_max_tokens: None/0 disables reasoning; our 3 fixed budget
+    levels (1024/4096/16000) otherwise. How this actually gets sent
+    depends on reasoning_format (see providers.py, confirmed against
+    each provider's own docs rather than guessed):
+      "tokens" (OpenRouter) — payload["reasoning"] = {"max_tokens": N},
+        or {"enabled": False} to disable. Models without reasoning
+        support just ignore the field, no error.
+      "effort" (Requesty) — a flat top-level payload["reasoning_effort"]
+        string ("low"/"medium"/"high"/"none"), NOT nested — our fixed
+        token budgets are mapped to the closest effort word via
+        _TOKENS_TO_EFFORT, since Requesty's own API doesn't take a raw
+        token count for this.
+      "raw" (Custom) — there's no guessable shape for an arbitrary
+        endpoint (confirmed OpenRouter/Requesty/LM Studio already differ
+        from each other), so `reasoning_max_tokens` is ignored entirely
+        and `reasoning_raw` is used instead: a JSON object fragment the
+        person wrote themselves for this specific participant (local
+        servers vary the shape model to model), merged into the request
+        body as-is via payload.update(...). Empty/None sends nothing.
+        Invalid JSON is logged as a warning and skipped — one typo in
+        one participant's settings shouldn't break their reply.
 
     web_search_max_results: if set, enables OpenRouter's "web" plugin
     for this one request — it runs a single web search (via Exa, or the
@@ -77,10 +121,14 @@ def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_
     search adaptively/repeatedly within a turn) — a single bounded
     search keeps cost predictable and needs no tool-call round-trip
     loop on our side. Its cost is already included in the returned
-    usage["cost"], same as everything else.
+    usage["cost"], same as everything else. Only meaningful for
+    providers with has_web_plugin=True — the caller is responsible for
+    not passing this otherwise (see providers.py).
 
     Returns (reply_text, usage), where usage is
     {"prompt_tokens": int, "completion_tokens": int, "cost": float|None}.
+    Requesty returns "cost" under this exact same key too (confirmed
+    against its docs), so budget tracking works unchanged there.
 
     Raises OpenRouterError on a network error or API error (incl. 429).
     """
@@ -95,15 +143,30 @@ def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_
         ],
         "max_tokens": max_tokens,
     }
-    if reasoning_max_tokens and reasoning_max_tokens > 0:
-        payload["reasoning"] = {"max_tokens": reasoning_max_tokens}
+    if reasoning_format == "raw":
+        raw = (reasoning_raw or "").strip()
+        if raw:
+            try:
+                extra = json.loads(raw)
+                if isinstance(extra, dict):
+                    payload.update(extra)
+                else:
+                    logger.warning(t("log_reasoning_raw_not_object", model=model_id))
+            except json.JSONDecodeError as e:
+                logger.warning(t("log_reasoning_raw_invalid", model=model_id, error=e))
+        # else: empty field on purpose — send nothing reasoning-related at all
+    elif reasoning_format == "effort":
+        payload["reasoning_effort"] = _TOKENS_TO_EFFORT.get(reasoning_max_tokens, "none")
     else:
-        payload["reasoning"] = {"enabled": False}
+        if reasoning_max_tokens and reasoning_max_tokens > 0:
+            payload["reasoning"] = {"max_tokens": reasoning_max_tokens}
+        else:
+            payload["reasoning"] = {"enabled": False}
     if web_search_max_results:
         payload["plugins"] = [{"id": "web", "max_results": web_search_max_results}]
 
     logger.debug(t("log_model_request", model=model_id, max_tokens=max_tokens))
-    result = _request(CHAT_URL, api_key, method="POST", payload=payload)
+    result = _request(f"{base_url}/chat/completions", api_key, method="POST", payload=payload)
 
     try:
         content = result["choices"][0]["message"]["content"].strip()
@@ -129,11 +192,13 @@ def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_
     return content, usage
 
 
-def get_key_info(api_key):
-    """Returns {usage, limit, limit_remaining, label} for the given key."""
+def get_key_info(api_key, base_url=DEFAULT_BASE_URL):
+    """Returns {usage, limit, limit_remaining, label} for the given key.
+    Only meaningful for providers with has_key_info=True (see providers.py) —
+    the caller is responsible for not exposing this action otherwise."""
     if not api_key:
         raise OpenRouterError(t("no_api_key_short_error"))
-    result = _request(KEY_INFO_URL, api_key, method="GET")
+    result = _request(f"{base_url}/key", api_key, method="GET")
     data = result.get("data", {})
     return {
         "usage": data.get("usage"),
@@ -143,11 +208,11 @@ def get_key_info(api_key):
     }
 
 
-def _fetch_all_models_raw(api_key=None):
-    """Raw OpenRouter model list (list of dicts with id/pricing/etc.) —
-    fetched once and reused to derive all_ids, free_ids, and family
-    groupings without hitting the network three times for one refresh click."""
-    result = _request(MODELS_LIST_URL, api_key, method="GET")
+def _fetch_all_models_raw(api_key=None, base_url=DEFAULT_BASE_URL):
+    """Raw model list (list of dicts with id/pricing/etc.) — fetched once
+    and reused to derive all_ids, free_ids, and family groupings without
+    hitting the network three times for one refresh click."""
+    result = _request(f"{base_url}/models", api_key, method="GET")
     return result.get("data", []) or []
 
 
@@ -156,7 +221,11 @@ def _is_free_model(model_data):
     per-token prices as strings (to dodge float precision issues) — a
     model is free when both prompt and completion pricing are exactly
     "0". More robust than checking for a ":free" suffix in the id,
-    though that convention also happens to hold in practice."""
+    though that convention also happens to hold in practice. Only
+    meaningful for providers with has_pricing_data=True — for others,
+    model dicts simply won't have a "pricing" field and this always
+    returns False, so free_ids from build_family_options() comes back
+    empty rather than erroring."""
     pricing = model_data.get("pricing") or {}
     try:
         return float(pricing.get("prompt", "1")) == 0 and float(pricing.get("completion", "1")) == 0
@@ -164,26 +233,28 @@ def _is_free_model(model_data):
         return False
 
 
-def fetch_all_model_ids(api_key=None):
-    """Full list of OpenRouter model IDs (public endpoint, key optional
-    but passed along if present — doesn't hurt)."""
-    return [m.get("id", "") for m in _fetch_all_models_raw(api_key) if m.get("id")]
+def fetch_all_model_ids(api_key=None, base_url=DEFAULT_BASE_URL):
+    """Full list of model IDs from the given provider (public endpoint,
+    key optional but passed along if present — doesn't hurt)."""
+    return [m.get("id", "") for m in _fetch_all_models_raw(api_key, base_url) if m.get("id")]
 
 
-def build_family_options(api_key=None):
+def build_family_options(api_key=None, base_url=DEFAULT_BASE_URL):
     """
-    Groups the full OpenRouter model list by family (see
-    models_catalog.FAMILIES) via regex.
+    Groups the full model list by family (see models_catalog.FAMILIES)
+    via regex — works the same for any provider using the same
+    "provider/model" ID convention as OpenRouter (confirmed for Requesty
+    too).
 
     Returns (options, all_ids, free_ids):
       options — {family_key: [sorted matching model_id, ...]}
       all_ids — the full unfiltered ID list (used e.g. for autocomplete
                 in custom-model slots, where a model might not match any family).
       free_ids — subset of all_ids priced at $0 for both prompt and
-                completion (see _is_free_model) — for the "free models
-                only" option in custom/flat slots.
+                completion (see _is_free_model) — empty for providers
+                without pricing data in their /models response.
     """
-    raw = _fetch_all_models_raw(api_key)
+    raw = _fetch_all_models_raw(api_key, base_url)
     all_ids = [m.get("id", "") for m in raw if m.get("id")]
     free_ids = [m.get("id", "") for m in raw if m.get("id") and _is_free_model(m)]
 
@@ -203,14 +274,20 @@ _MODERATOR_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 def _resolve_participant(raw_value, participants, allow_user):
     """
     Softly matches whatever the moderator returned in "next" against a
-    real participant id. Moderator models (especially weaker ones) often
+    real participant. Moderator models (especially weaker ones) often
     write a short name ("claude-sonnet-5") instead of the full id
     ("anthropic/claude-sonnet-5"), a family name ("Claude", "MistralAI"),
     or an alias without the provider prefix ("grok-latest"). This used to
     make EVERY moderator answer get rejected as invalid, falling back
     every single time — the moderator effectively never worked.
 
-    Returns a participant id, "user" (if allowed), or None.
+    Matches against participant_id (not the raw model id) — the two
+    differ only when the same underlying model appears in more than one
+    custom slot (allowed, so one model can be given several different
+    personas); the 2nd/3rd/... occurrence's participant_id carries a
+    "#2"/"#3"/... suffix precisely so it can still be told apart here.
+
+    Returns a participant_id, "user" (if allowed), or None.
     """
     if not raw_value:
         return None
@@ -220,34 +297,34 @@ def _resolve_participant(raw_value, participants, allow_user):
     if raw.lower() == "user":
         return "user" if allow_user else None
 
-    # 1. exact match on the full id
+    # 1. exact match on the full participant_id
     for p in participants:
-        if p["id"] == raw:
-            return p["id"]
+        if p["participant_id"] == raw:
+            return p["participant_id"]
 
-    def tail(model_id):
-        return model_id.lstrip("~").split("/", 1)[-1].lower()
+    def tail(participant_id):
+        return participant_id.lstrip("~").split("/", 1)[-1].lower()
 
     raw_lower = raw.lstrip("~").lower()
 
     # 2. match on the id's "tail" after the provider (and without ~latest)
     for p in participants:
-        if tail(p["id"]) == raw_lower:
-            return p["id"]
+        if tail(p["participant_id"]) == raw_lower:
+            return p["participant_id"]
 
     # 3. match on family name/label, e.g. "Gemini", "MistralAI"
     #    (a label like "Claude (claude-sonnet-5)" -> base part "claude")
     for p in participants:
         base_label = p["label"].split("(")[0].strip().lower()
         if raw_lower == base_label:
-            return p["id"]
+            return p["participant_id"]
 
     # 4. last resort: substring match either way
     for p in participants:
-        id_lower = p["id"].lower()
+        id_lower = p["participant_id"].lower()
         base_label = p["label"].split("(")[0].strip().lower()
         if raw_lower in id_lower or id_lower in raw_lower or raw_lower in base_label or base_label in raw_lower:
-            return p["id"]
+            return p["participant_id"]
 
     return None
 
@@ -281,7 +358,8 @@ def _parse_moderator_reply(raw_text, participants, allow_user):
 
 
 def ask_moderator(api_key, moderator_model_id, topic, transcript_text, participants,
-                   allow_user, replies_done=0, max_replies=0, is_final_reply=False):
+                   allow_user, replies_done=0, max_replies=0, is_final_reply=False,
+                   base_url=DEFAULT_BASE_URL, reasoning_format="tokens"):
     """
     Asks the moderator model who should speak next, what they should do,
     why, what type of reaction is needed, and whether it's time to wrap
@@ -292,18 +370,20 @@ def ask_moderator(api_key, moderator_model_id, topic, transcript_text, participa
     regardless of what the moderator returns — here it only strengthens
     the prompt so the moderator picks a participant well-suited to close things out.
 
-    participants — list of {id, label, persona} dicts (from full_catalog,
-    covering both standard and custom models); MUST contain only
-    currently available participants (see the "temporarily unavailable"
-    mechanism in main.py) so the moderator can't physically pick a model
-    that's erroring out right now.
+    participants — list of {id, participant_id, label, persona} dicts
+    (from full_catalog, covering both standard and custom models); MUST
+    contain only currently available participants (see the "temporarily
+    unavailable" mechanism in main.py) so the moderator can't physically
+    pick a model that's erroring out right now. The moderator is shown
+    and picks by participant_id (unique even when the same underlying
+    model appears in multiple custom slots), not the raw model id.
 
     Returns (decision, usage); decision is _parse_moderator_reply's dict
     (next may be None if the moderator gave no recognizable answer — the
     caller then picks a fallback).
     """
     participants_desc = "\n".join(
-        f"- {p['id']}: {p['label']} — {p['persona'][:100]}" for p in participants
+        f"- {p['participant_id']}: {p['label']} — {p['persona'][:100]}" for p in participants
     )
     if allow_user:
         # "user" used to only be mentioned in a sentence AFTER this list,
@@ -331,7 +411,8 @@ def ask_moderator(api_key, moderator_model_id, topic, transcript_text, participa
 
     content, usage = ask_model(
         api_key, moderator_model_id, system_prompt, user_prompt,
-        max_tokens=220, reasoning_max_tokens=None,
+        max_tokens=220, reasoning_max_tokens=None, base_url=base_url,
+        reasoning_format=reasoning_format,
     )
     decision = _parse_moderator_reply(content, participants, allow_user)
     if decision["next"] is None:
@@ -341,7 +422,8 @@ def ask_moderator(api_key, moderator_model_id, topic, transcript_text, participa
     return decision, usage
 
 
-def ask_moderator_web_lookup(api_key, moderator_model_id, topic):
+def ask_moderator_web_lookup(api_key, moderator_model_id, topic, base_url=DEFAULT_BASE_URL,
+                              reasoning_format="tokens"):
     """
     Optional pre-session step: asks the moderator model to check the web
     for the topic (current date, recent events, any real-world context
@@ -351,6 +433,10 @@ def ask_moderator_web_lookup(api_key, moderator_model_id, topic):
     starts; the summary gets folded into the transcript so every
     participant sees it from their very first reply onward.
 
+    Only meaningful for providers with has_web_plugin=True (see
+    providers.py) — the caller is responsible for not exposing this
+    action otherwise.
+
     Returns (summary_text, usage). Raises OpenRouterError on failure —
     the caller should treat that as "skip it, don't block the session".
     """
@@ -359,4 +445,5 @@ def ask_moderator_web_lookup(api_key, moderator_model_id, topic):
     return ask_model(
         api_key, moderator_model_id, system_prompt, user_prompt,
         max_tokens=400, reasoning_max_tokens=None, web_search_max_results=5,
+        base_url=base_url, reasoning_format=reasoning_format,
     )

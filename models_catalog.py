@@ -142,7 +142,18 @@ def build_full_catalog(config):
     Assembles the full participant list from current settings: checked
     families (with their chosen concrete model) + filled custom slots.
 
-    Returns a list of {id, label, color, persona, reasoning_max_tokens}.
+    Returns a list of {id, participant_id, label, color, persona,
+    reasoning_max_tokens}. "id" is the REAL model ID (used for the
+    actual API call); "participant_id" is the unique key everything
+    else — the moderator prompt, speak counts, button dispatch, "who
+    just spoke" tracking — uses to tell participants apart. They're the
+    same string UNLESS the same model appears in more than one custom
+    slot (allowed on purpose, so one model can be given several
+    different personas) — then the 2nd/3rd/... occurrence gets a
+    "#2"/"#3"/... suffix on participant_id only, invisible to the
+    actual API call. Families can't collide with each other (checkbox
+    per family), so their participant_id always just equals their id.
+
     "label" already includes the concrete model in parentheses, e.g.
     "Claude (claude-sonnet-5)" — for display in chat.
     """
@@ -166,10 +177,13 @@ def build_full_catalog(config):
             level_code = normalize_reasoning_level(reasoning_levels.get(key))
             full.append({
                 "id": model_id,
+                "participant_id": model_id,
                 "label": f"{fam['label']} ({short_model_name(model_id)})",
                 "color": fam["color"],
                 "persona": persona,
                 "reasoning_max_tokens": REASONING_LEVELS.get(level_code),
+                "reasoning_raw": "",  # families never pair with a "raw"-format provider (use_families
+                                      # is forced off for those), but the key is always present
             })
         # The 3 "own" slots live at storage indices 5-7 (not 0-2) — so
         # that switching to flat mode can put the 5 families at indices
@@ -183,6 +197,7 @@ def build_full_catalog(config):
         slots_to_use = custom_models[:8]
         slot_colors = FLAT_MODE_COLORS
 
+    seen_custom_model_ids = {}  # model_id -> how many times seen so far, for the #2/#3/... suffix
     for index, item in enumerate(slots_to_use):
         if not item.get("enabled"):
             continue
@@ -194,19 +209,27 @@ def build_full_catalog(config):
         label = f"{raw_label} ({short_name})" if raw_label else short_name
         persona = (item.get("persona") or "").strip() or CUSTOM_DEFAULT_PERSONA
         level_code = normalize_reasoning_level(item.get("reasoning_level"))
+
+        seen_custom_model_ids[model_id] = seen_custom_model_ids.get(model_id, 0) + 1
+        occurrence = seen_custom_model_ids[model_id]
+        participant_id = model_id if occurrence == 1 else f"{model_id}#{occurrence}"
+
         full.append({
             "id": model_id,
+            "participant_id": participant_id,
             "label": label,
             "color": slot_colors[index % len(slot_colors)],
             "persona": persona,
             "reasoning_max_tokens": REASONING_LEVELS.get(level_code),
+            "reasoning_raw": (item.get("reasoning_raw") or ""),  # only used when the active
+                                                                  # provider's reasoning_format is "raw"
         })
 
     return full
 
 
-def find_in_catalog(model_id, full_catalog):
+def find_in_catalog(participant_id, full_catalog):
     for item in full_catalog:
-        if item["id"] == model_id:
+        if item["participant_id"] == participant_id:
             return item
     return None

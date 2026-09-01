@@ -204,6 +204,7 @@ _BUILTIN_TRANSLATIONS = {
         "reasoning_medium": "Средний",
         "reasoning_high": "Высокий",
         "reasoning_label": "Рассуждения:",
+        "reasoning_raw_label": "Рассуждения (JSON, необязательно):",
 
         "cost_line": "(стоимость реплики: ${cost})",
         "cost_line_with_moderator": "(стоимость реплики: ${cost} + ведущий ${mod} = ${total})",
@@ -223,11 +224,12 @@ _BUILTIN_TRANSLATIONS = {
         "save_settings_button": "Сохранить настройки",
         "open_settings_folder_button": "Открыть папку настроек",
         "profile_block_hint": (
-            "Каждый профиль хранит СВОЙ API-ключ и все настройки отдельно — "
-            "удобно, если у вас несколько аккаунтов OpenRouter или разные "
-            "наборы участников под разные случаи. Профиль применяется сразу "
-            "при выборе из списка. Кнопка «Сохранить настройки» справа "
-            "пишет все правки формы ниже в текущий активный профиль."
+            "Каждый профиль хранит СВОЙ API-ключ, провайдера и все настройки "
+            "отдельно — удобно, если у вас несколько аккаунтов/провайдеров "
+            "или разные наборы участников под разные случаи. Профиль "
+            "применяется сразу при выборе из списка. Кнопка «Сохранить "
+            "настройки» справа пишет все правки формы ниже в текущий "
+            "активный профиль."
         ),
         "new_profile_name_prompt": "Название нового профиля:",
         "profile_exists_overwrite": "Профиль «{name}» уже существует. Перезаписать?",
@@ -242,7 +244,21 @@ _BUILTIN_TRANSLATIONS = {
         "log_settings_folder_opened": "Открыта папка настроек: {path}",
         "log_settings_folder_error": "Не удалось открыть папку настроек: {error}",
 
-        "api_key_block_title": "API-ключ OpenRouter",
+        "api_key_block_title": "API-ключ",
+        "api_provider_label": "Провайдер API:",
+        "custom_base_url_label": "URL сервера:",
+        "custom_provider_warning": (
+            "ℹ У Custom-провайдера нет семейств (только свои модели ниже), "
+            "проверки баланса, фильтра бесплатных моделей и веб-поиска "
+            "ведущего — их просто не с чем сверять для произвольного "
+            "сервера. Список моделей может быть недоступен для "
+            "автообновления — тогда впишите ID модели вручную в поле "
+            "ниже, это всегда работает. Рассуждения задаются отдельно "
+            "у каждой модели как сырой JSON-фрагмент (см. подсказку "
+            "у соответствующего поля) — единого формата для всех "
+            "локальных серверов не существует."
+        ),
+        "log_api_provider_switched": "Провайдер API переключён на: {provider}",
         "show_checkbox": "показать",
         "check_balance_button": "Проверить баланс ключа",
         "refresh_models_button": "Обновить список моделей",
@@ -289,6 +305,7 @@ _BUILTIN_TRANSLATIONS = {
         "log_intervene_requested": "Пользователь запросил вмешательство",
 
         "set_api_key_first": "Сначала укажите API-ключ на вкладке «Настройки».",
+        "enter_custom_url_first": "Сначала укажите URL сервера для Custom-провайдера на вкладке «Настройки».",
         "select_min_models_in_settings": "На вкладке «Настройки» выберите минимум {min} моделей.",
         "enter_topic_warning": "Введите тему обсуждения.",
         "user_topic_label": "Пользователь (тема)",
@@ -361,10 +378,18 @@ _BUILTIN_TRANSLATIONS = {
         "log_http_error": "HTTPError {code} при обращении к {url}: {message}",
         "api_error": "Ошибка API ({code}): {message}",
         "network_error": "Сетевая ошибка: {reason}",
+        "timeout_error": (
+            "Не дождались ответа за {seconds} сек. Локальные модели "
+            "(особенно с рассуждениями) иногда отвечают дольше — просто "
+            "попробуйте ещё раз, эта модель ненадолго уйдёт в «охлаждение»."
+        ),
+        "log_timeout_error": "Таймаут ({seconds} сек) при обращении к {url}",
         "log_url_error": "URLError при обращении к {url}: {reason}",
-        "no_api_key_error": "Не указан API-ключ OpenRouter. Заполните его в настройках.",
-        "no_api_key_short_error": "Не указан API-ключ OpenRouter.",
+        "no_api_key_error": "Не указан API-ключ. Заполните его в настройках.",
+        "no_api_key_short_error": "Не указан API-ключ.",
         "log_model_request": "Запрос к модели {model} (max_tokens={max_tokens})",
+        "log_reasoning_raw_invalid": "Невалидный JSON в поле «Рассуждения» у модели {model}: {error} — поле пропущено",
+        "log_reasoning_raw_not_object": "Поле «Рассуждения» у модели {model} — не JSON-объект, пропущено",
         "parse_error": "Не удалось разобрать ответ модели: {error}\nОтвет сервера: {result}",
         "log_model_truncated": "Модель {model}: ответ обрезан по лимиту max_tokens={max_tokens}",
         "truncated_note": "\n\n[…ответ обрезан по лимиту длины]",
@@ -445,7 +470,7 @@ _BUILTIN_TRANSLATIONS = {
         "web_lookup_transcript_entry": "Ведущий (проверка интернета): {text}",
         "cost_line_web_lookup": "(стоимость проверки интернета: ${cost})",
         "log_web_lookup_failed": "Не удалось выполнить проверку интернета: {error}",
-        "key_limit_not_set": "лимит на ключ не задан (смотрите общий баланс на openrouter.ai)",
+        "key_limit_not_set": "лимит на ключ не задан (смотрите общий баланс на сайте провайдера)",
         "key_limit_set": "лимит ключа ${limit}, остаток ${remaining}",
         "key_balance_text": "Потрачено всего с ключа: {usage}  •  {limit_text}",
 
@@ -496,7 +521,9 @@ _BUILTIN_TRANSLATIONS = {
         "log_refresh_models_failed": "Не удалось обновить список моделей: {error}",
         "refresh_error": "Ошибка обновления: {error}",
         "models_updated_status": "обновлено: {timestamp}. Всего моделей: {total}, из них бесплатно: {free}.",
+        "models_updated_status_no_pricing": "обновлено: {timestamp}. Всего моделей: {total}.",
         "log_models_updated": "Список моделей обновлён: всего {total}, бесплатных {free}",
+        "log_models_updated_no_pricing": "Список моделей обновлён: всего {total}",
 
         "custom_models_title": "Дополнительные модели (до {max}, свои)",
         "flat_models_title": "Модели (до {max}, все свои)",
@@ -507,11 +534,15 @@ _BUILTIN_TRANSLATIONS = {
             "настройки не потеряются — они просто скрыты, пока не включите "
             "эту галочку обратно."
         ),
+        "families_unavailable_note": (
+            "У этого провайдера нет семейств — настройте всех участников "
+            "ниже, в блоке «Модели» (8 независимых слотов)."
+        ),
         "log_use_families_toggled": "Режим семейств переключён: {value}",
         "free_only_checkbox": "Показывать в выборе только бесплатные модели",
         "log_free_only_toggled": "Фильтр «только бесплатные» переключён: {value}",
         "custom_models_info": (
-            "ℹ Сюда можно добавить любую другую модель с OpenRouter — "
+            "ℹ Сюда можно добавить любую другую модель с {provider} — "
             "например, DeepSeek или что угодно ещё из полного каталога. "
             "Укажите точный ID модели (формат «провайдер/название», "
             "например deepseek/deepseek-v4-flash-0731). Полный список "
@@ -526,8 +557,11 @@ _BUILTIN_TRANSLATIONS = {
             "Слот дополнительной модели №{n} включён, но не указан ID "
             "модели. Укажите ID или снимите галочку «включить»."
         ),
-        "custom_slot_duplicate_id": (
-            "Модель с ID «{id}» уже выбрана (повтор в слоте №{n}). Уберите дубликат."
+        "custom_slot_duplicates_family": (
+            "Модель с ID «{id}» уже занята стандартным семейством (слот №{n}). "
+            "Между своими слотами модель дублировать можно (например, с разными "
+            "персонажами), но не с уже выбранным семейством — уберите дубликат "
+            "или снимите галочку у соответствующего семейства."
         ),
         "min_models_warning": "Выберите минимум {min} моделей для брейншторма.",
         "max_models_warning": "Максимум {max} моделей одновременно — иначе сессия станет слишком дорогой и долгой.",
@@ -551,6 +585,7 @@ _BUILTIN_TRANSLATIONS = {
         "reasoning_medium": "Medium",
         "reasoning_high": "High",
         "reasoning_label": "Reasoning:",
+        "reasoning_raw_label": "Reasoning (JSON, optional):",
 
         "cost_line": "(reply cost: ${cost})",
         "cost_line_with_moderator": "(reply cost: ${cost} + moderator ${mod} = ${total})",
@@ -570,12 +605,12 @@ _BUILTIN_TRANSLATIONS = {
         "save_settings_button": "Save Settings",
         "open_settings_folder_button": "Open Settings Folder",
         "profile_block_hint": (
-            "Each profile stores its OWN API key and all settings "
-            "separately — handy if you have several OpenRouter accounts "
-            "or different participant sets for different occasions. A "
-            "profile is applied as soon as you pick it from the list. "
-            "The \"Save Settings\" button on the right writes all form "
-            "edits below into the currently active profile."
+            "Each profile stores its OWN API key, provider, and all "
+            "settings separately — handy if you have several accounts/"
+            "providers or different participant sets for different "
+            "occasions. A profile is applied as soon as you pick it from "
+            "the list. The \"Save Settings\" button on the right writes "
+            "all form edits below into the currently active profile."
         ),
         "new_profile_name_prompt": "New profile name:",
         "profile_exists_overwrite": "Profile \"{name}\" already exists. Overwrite?",
@@ -590,7 +625,20 @@ _BUILTIN_TRANSLATIONS = {
         "log_settings_folder_opened": "Opened settings folder: {path}",
         "log_settings_folder_error": "Could not open settings folder: {error}",
 
-        "api_key_block_title": "OpenRouter API Key",
+        "api_key_block_title": "API Key",
+        "api_provider_label": "API Provider:",
+        "custom_base_url_label": "Server URL:",
+        "custom_provider_warning": (
+            "ℹ The Custom provider has no families (only your own models "
+            "below), balance check, free-models filter, or moderator web "
+            "lookup — there's simply nothing to check those against for "
+            "an arbitrary server. The model list may not auto-refresh — "
+            "in that case just type the model ID by hand into the field "
+            "below, that always works. Reasoning is set separately per "
+            "model as a raw JSON fragment (see the hint next to that "
+            "field) — there's no single format across local servers."
+        ),
+        "log_api_provider_switched": "API provider switched to: {provider}",
         "show_checkbox": "show",
         "check_balance_button": "Check Key Balance",
         "refresh_models_button": "Refresh Model List",
@@ -637,6 +685,7 @@ _BUILTIN_TRANSLATIONS = {
         "log_intervene_requested": "User requested to intervene",
 
         "set_api_key_first": "Set your API key on the Settings tab first.",
+        "enter_custom_url_first": "Set the server URL for the Custom provider on the Settings tab first.",
         "select_min_models_in_settings": "On the Settings tab, select at least {min} models.",
         "enter_topic_warning": "Enter a discussion topic.",
         "user_topic_label": "User (topic)",
@@ -709,10 +758,18 @@ _BUILTIN_TRANSLATIONS = {
         "log_http_error": "HTTPError {code} calling {url}: {message}",
         "api_error": "API error ({code}): {message}",
         "network_error": "Network error: {reason}",
+        "timeout_error": (
+            "No response after {seconds}s. Local models (especially with "
+            "reasoning enabled) can sometimes take longer — just try "
+            "again, this model will briefly cool down."
+        ),
+        "log_timeout_error": "Timeout ({seconds}s) calling {url}",
         "log_url_error": "URLError calling {url}: {reason}",
-        "no_api_key_error": "No OpenRouter API key set. Add it in Settings.",
-        "no_api_key_short_error": "No OpenRouter API key set.",
+        "no_api_key_error": "No API key set. Add it in Settings.",
+        "no_api_key_short_error": "No API key set.",
         "log_model_request": "Requesting model {model} (max_tokens={max_tokens})",
+        "log_reasoning_raw_invalid": "Invalid JSON in the \"Reasoning\" field for model {model}: {error} — field skipped",
+        "log_reasoning_raw_not_object": "The \"Reasoning\" field for model {model} isn't a JSON object, skipped",
         "parse_error": "Could not parse the model's response: {error}\nServer response: {result}",
         "log_model_truncated": "Model {model}: reply cut off by max_tokens={max_tokens}",
         "truncated_note": "\n\n[…reply cut off by length limit]",
@@ -790,7 +847,7 @@ _BUILTIN_TRANSLATIONS = {
         "web_lookup_transcript_entry": "Moderator (web check): {text}",
         "cost_line_web_lookup": "(web check cost: ${cost})",
         "log_web_lookup_failed": "Could not complete the web check: {error}",
-        "key_limit_not_set": "no limit set on this key (see your overall balance at openrouter.ai)",
+        "key_limit_not_set": "no limit set on this key (see your overall balance on the provider's site)",
         "key_limit_set": "key limit ${limit}, remaining ${remaining}",
         "key_balance_text": "Total spent with this key: {usage}  •  {limit_text}",
 
@@ -840,7 +897,9 @@ _BUILTIN_TRANSLATIONS = {
         "log_refresh_models_failed": "Could not refresh model list: {error}",
         "refresh_error": "Refresh error: {error}",
         "models_updated_status": "updated: {timestamp}. Models: {total} total, {free} free.",
+        "models_updated_status_no_pricing": "updated: {timestamp}. Models: {total} total.",
         "log_models_updated": "Model list updated: {total} total, {free} free",
+        "log_models_updated_no_pricing": "Model list updated: {total} total",
 
         "custom_models_title": "Additional Models (up to {max}, your own)",
         "flat_models_title": "Models (up to {max}, all your own)",
@@ -851,11 +910,15 @@ _BUILTIN_TRANSLATIONS = {
             "families and their settings aren't lost — they're just hidden "
             "until you turn this checkbox back on."
         ),
+        "families_unavailable_note": (
+            "This provider has no families — set up all participants "
+            "below, in the \"Models\" block (8 independent slots)."
+        ),
         "log_use_families_toggled": "Family mode toggled: {value}",
         "free_only_checkbox": "Show only free models to choose from",
         "log_free_only_toggled": "\"Free models only\" filter toggled: {value}",
         "custom_models_info": (
-            "ℹ Add any other OpenRouter model here — DeepSeek, or "
+            "ℹ Add any other {provider} model here — DeepSeek, or "
             "anything else from the full catalog. Enter the exact model "
             "ID (format \"provider/name\", e.g. "
             "deepseek/deepseek-v4-flash-0731). Full model list with IDs:"
@@ -869,8 +932,11 @@ _BUILTIN_TRANSLATIONS = {
             "Custom model slot #{n} is enabled, but no model ID is set. "
             "Enter an ID or uncheck \"enable\"."
         ),
-        "custom_slot_duplicate_id": (
-            "Model \"{id}\" is already selected (duplicate in slot #{n}). Remove the duplicate."
+        "custom_slot_duplicates_family": (
+            "Model \"{id}\" is already claimed by a standard family (slot #{n}). "
+            "Duplicating a model across your OWN slots is fine (e.g. with different "
+            "personas), but not with an already-selected family — remove the "
+            "duplicate or uncheck that family."
         ),
         "min_models_warning": "Select at least {min} models for the brainstorm.",
         "max_models_warning": "Maximum {max} models at once — otherwise the session gets too expensive and slow.",

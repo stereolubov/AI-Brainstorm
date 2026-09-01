@@ -1,14 +1,40 @@
 # AI Brainstorm
 
 A desktop app for group brainstorming with several AI models at once,
-through a single OpenRouter API key. Claude, ChatGPT, Grok, Gemini and
-MistralAI argue, riff on, and build on each other's ideas — orchestrated
-by a moderator (AI or you) — while you watch, join in, or steer.
+through OpenRouter, Requesty, or your own OpenAI-compatible server
+(local or self-hosted). Claude, ChatGPT, Grok, Gemini and MistralAI
+argue, riff on, and build on each other's ideas — orchestrated by a
+moderator (AI or you) — while you watch, join in, or steer.
 
 Pure Python + standard library (`tkinter`, `urllib`, `json`, `threading`,
 `re`, `logging`) — no `pip install` needed to run it.
 
 Русская версия: [README.ru.md](README.ru.md)
+
+## API Providers
+
+Pick one from the dropdown right above the API key field on Settings —
+each profile remembers its own choice, key, and (for Custom) URL.
+
+- **OpenRouter** (default) — the most complete option: model families,
+  free-models filter, balance check, moderator web search, and $ cost
+  tracking all work.
+- **Requesty** — a similarly-shaped hosted router (same `provider/model`
+  ID convention, so families work the same way, and it reports request
+  cost too, so budget tracking works). No free-models filter (its
+  model list doesn't expose pricing), no balance-check button, no
+  moderator web search — see `providers.py` for exactly why each one
+  doesn't fit cleanly rather than being half-implemented.
+- **Custom** — any other OpenAI-compatible endpoint: a local server
+  (LM Studio, Ollama, etc.), a self-hosted proxy, or another cloud
+  provider. Type its base URL in Settings. No families (there's no
+  fixed vendor-prefix convention to match against for an arbitrary
+  server), no balance/free-filter/web-search UI, no $ budget tracking
+  (such servers essentially never report a cost) — just chat plus an
+  optional raw JSON reasoning fragment per participant, see below.
+  **Experimental** — request/response shapes vary enough between local
+  servers that some rough edges are expected; see Known issues below
+  for local-model response-time guidance.
 
 ## Running
 
@@ -78,7 +104,7 @@ own API key:
 - Windows: `C:\Users\<name>\.ai_brainstorm\profiles\<name>.json`
 - Linux/macOS: `~/.ai_brainstorm/profiles/<name>.json`
 
-Useful for multiple OpenRouter accounts or different participant sets
+Useful for multiple accounts/providers or different participant sets
 for different occasions. The dropdown on the Settings tab applies a
 profile the moment you pick it — no separate "load" step. "Save As…"
 snapshots the current form under a new name without touching the old
@@ -92,44 +118,67 @@ switch profiles.
 
 ## Participants
 
-**Standard families** (up to 5) — Claude, ChatGPT, Grok, Gemini,
-MistralAI. Each family is matched against OpenRouter's live model list
-by regex, so the dropdown of concrete models self-updates as providers
-ship new ones — click "Refresh Model List" any time. Pick which
-concrete model to use within a family, edit its persona, and set a
-reasoning-token budget (see below).
+**Standard families** (up to 5, OpenRouter/Requesty only) — Claude,
+ChatGPT, Grok, Gemini, MistralAI. Each family is matched against the
+provider's live model list by regex (both use the same `vendor/model`
+ID convention), so the dropdown of concrete models self-updates as new
+ones ship — click "Refresh Model List" any time. Pick which concrete
+model to use within a family, edit its persona, and set a reasoning
+level (see below). Not available for Custom — an arbitrary server has
+no fixed vendor-prefix naming to match against.
 
-**Custom models** (up to 3) — any other OpenRouter model by exact ID
-(e.g. `deepseek/deepseek-v4-flash-0731`), with its own name, persona,
-and reasoning level. The ID field autocompletes from the same refreshed
-model list.
+**Custom models** (up to 3 alongside families, or all 8 in flat mode —
+the only option for Custom, see below) — any other model by exact ID,
+with its own name, persona, and reasoning setting. The ID field
+autocompletes from the refreshed model list when the provider makes
+one available. The same model ID can be used in more than one slot on
+purpose — handy for giving one model several distinct personas (e.g.
+two instances of a local model, one sarcastic, one earnest); each
+still counts as a genuinely separate participant with its own voice,
+its own place in the speaking order, and its own "who spoke last"
+tracking. A custom slot still can't reuse a model already claimed by a
+selected family, though — families keep their own separate uniqueness.
 
 2 to 8 participants total. In chat, each one's label shows the exact
 model in use, e.g. "Claude (claude-sonnet-5)".
 
 **Skip families entirely** — a "Use families" checkbox in the standard
-models block; uncheck it to turn the 5 standard + 3 custom layout into
-8 flat, fully generic slots instead (no preset personas or brand colors
-tied to a vendor). Unchecking it migrates your currently-configured
-families into the newly available slots (in a fixed Claude → ChatGPT →
-Grok → Gemini → MistralAI order, regardless of which were checked, so
-the visual order stays predictable) — your prior 3 custom slots aren't
-touched or reshuffled. Checking it back on restores your family
-configuration exactly as it was; both are always kept in the saved
-profile regardless of which is currently active.
+models block (hidden for Custom, where it's forced off); uncheck it to
+turn the 5 standard + 3 custom layout into 8 flat, fully generic slots
+instead (no preset personas or brand colors tied to a vendor).
+Unchecking it migrates your currently-configured families into the
+newly available slots (in a fixed Claude → ChatGPT → Grok → Gemini →
+MistralAI order, regardless of which were checked, so the visual order
+stays predictable) — your prior 3 custom slots aren't touched or
+reshuffled. Checking it back on restores your family configuration
+exactly as it was; both are always kept in the saved profile
+regardless of which is currently active.
 
-**Free models only** — when families are off, a second checkbox
-filters the ID autocomplete down to $0-priced models only (detected via
-OpenRouter's own per-model pricing data, refreshed together with the
-main model list). Switches instantly, no extra network call.
+**Free models only** (OpenRouter only) — a checkbox that filters the ID
+autocomplete down to $0-priced models, detected via OpenRouter's own
+per-model pricing data and refreshed together with the main model
+list. Switches instantly, no extra network call. Not available for
+Requesty (its model list doesn't expose pricing) or Custom.
 
 ### Reasoning levels
 
-Optional token budget for a model's hidden "thinking" before its
-visible reply — Off / Low (≤1024) / Medium (≤4096) / High (≤16000).
-Off by default: rarely helps a casual brainstorm and can quietly
-inflate the bill. Not every model supports it; the setting just has no
-effect where it isn't.
+Optional budget for a model's hidden "thinking" before its visible
+reply. For OpenRouter/Requesty, pick one of 4 levels — Off / Low /
+Medium / High — from a dropdown per participant; the app translates
+that into whatever the provider's API actually expects under the hood
+(a numeric token budget for OpenRouter, an effort word for Requesty —
+confirmed against each provider's own docs, not guessed). Off by
+default: rarely helps a casual brainstorm and can quietly inflate the
+bill. Not every model supports it; the setting just has no effect
+where it isn't.
+
+For **Custom**, there's no guessable shape — OpenRouter, Requesty, and
+LM Studio all format this differently from each other, so a generic
+translation isn't possible. Instead, each participant gets its own
+"Reasoning (JSON, optional)" text field: write the exact fragment your
+server expects (e.g. `{"reasoning": {"effort": "low"}}`), merged into
+the request body as-is. Empty sends nothing. Invalid JSON is skipped
+with a warning in the Log tab rather than failing that reply.
 
 ## Moderator
 
@@ -151,15 +200,17 @@ don't count against the reply limit or budget.
 asking the moderator model for a bullet-point recap: key ideas, points
 of agreement/disagreement, an overall takeaway.
 
-**Web check before starting** — off by default. When enabled, the
-moderator runs a single web search (OpenRouter's built-in `web` plugin,
-no separate search API key needed) before the discussion begins,
-looking for anything relevant to the topic — recent events, or a
-non-obvious tie-in with today's actual date the participants might
+**Web check before starting** (OpenRouter only) — off by default. When
+enabled, the moderator runs a single web search (OpenRouter's built-in
+`web` plugin, no separate search API key needed) before the discussion
+begins, looking for anything relevant to the topic — recent events, or
+a non-obvious tie-in with today's actual date the participants might
 otherwise miss entirely. The findings appear as their own message in
 the chat and are folded into the transcript, so every participant sees
 them from their first reply onward. Adds a small extra cost for the
-search itself, shown like any other cost line.
+search itself, shown like any other cost line. Not offered for
+Requesty (its web search is per-model-family, not a universal flag) or
+Custom.
 
 **Intervene** — pause the discussion mid-flight, leave a note for the
 participants, or end the session right there. A dedicated button in
@@ -172,17 +223,19 @@ regardless of whether the moderator remembered to ask for one.
 
 Two independent stop conditions, whichever hits first:
 
-- **Budget** ($, set in Settings) — includes both participant replies
-  and moderator calls. OpenRouter returns an exact cost per request;
-  it's shown under each reply (in italic gray, right-aligned), split
-  out when a moderator call is folded in (e.g. "$0.0031 + moderator
-  $0.0012 = $0.0043").
+- **Budget** ($, set in Settings; OpenRouter/Requesty only — the field
+  is hidden entirely for Custom, which essentially never reports a $
+  cost) — includes both participant replies and moderator calls. The
+  provider returns an exact cost per request; it's shown under each
+  reply (in italic gray, right-aligned), split out when a moderator
+  call is folded in (e.g. "$0.0031 + moderator $0.0012 = $0.0043").
 - **Max replies** (set on the Chat tab) — counts only participant
-  replies, not the moderator's own calls or your own turns.
+  replies, not the moderator's own calls or your own turns. The only
+  stop condition that applies to Custom.
 
-A model that starts erroring (rate limits, etc.) is put on a short
-cooldown and excluded from the moderator's choices — quietly, without
-spamming the chat; the reason stays visible in the Log tab.
+A model that starts erroring (rate limits, timeouts, etc.) is put on a
+short cooldown and excluded from the moderator's choices — quietly,
+without spamming the chat; the reason stays visible in the Log tab.
 
 ## Chat display
 
@@ -211,9 +264,10 @@ ai_brainstorm/
 ├── main.py             — entry point, Tkinter UI, moderator/worker logic
 ├── config.py            — profiles, app-wide settings, locale folder paths
 ├── models_catalog.py    — model families, reasoning levels, catalog assembly
-├── api_client.py        — OpenRouter calls: chat, moderator, model list, key balance
+├── api_client.py        — provider-agnostic API calls: chat, moderator, model list, key balance
 ├── i18n.py               — translation loading/fallback, built-in RU/EN dictionaries
 ├── theme.py               — Light/Dark palettes, ttk.Style() + plain Text/Canvas theming
+├── providers.py           — provider registry (OpenRouter/Requesty/Custom) and capability flags
 ├── favicon.ico           — app icon (optional, add your own)
 ├── README.md / README.ru.md
 ```
@@ -237,6 +291,14 @@ ai_brainstorm/
   in keys that are entirely absent. If a label looks outdated after an
   update, delete the corresponding file (the app regenerates it from
   the current built-in defaults on next launch).
+- **For Custom/local models, avoid heavy models whose replies take
+  longer than about 3 minutes.** That's the app's request timeout
+  ceiling — comfortably generous for cloud providers, but a large local
+  reasoning model on modest hardware can genuinely exceed it, which
+  aborts that one reply (the model gets a short cooldown and the
+  session continues — nothing crashes, but that reply is lost). If you
+  hit this often, pick a smaller/faster local model or lower its
+  reasoning effort.
 
 ## Changelog
 
@@ -247,4 +309,7 @@ ai_brainstorm/
 - **2026-08-30** — Added an option to skip families entirely for 8 flat
   custom slots, and a "free models only" filter for that mode's
   autocomplete.
+- **2026-09-01** — Added support for the Requesty provider, and
+  (experimental) support for your own OpenAI-compatible pools/servers
+  via the new Custom provider.
 
