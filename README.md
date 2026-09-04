@@ -312,4 +312,6 @@ ai_brainstorm/
 - **2026-09-01** — Added support for the Requesty provider, and
   (experimental) support for your own OpenAI-compatible pools/servers
   via the new Custom provider.
+- **2026-09-04** — Added support for the Polza.ai provider, for users
+  connecting from Russia.
 

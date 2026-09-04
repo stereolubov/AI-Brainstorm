@@ -53,6 +53,9 @@ DEFAULT_CONFIG = {
     "api_key": "",
     "api_provider": DEFAULT_PROVIDER,
     "custom_base_url": "",          # only used when api_provider == "custom" — unknowable in advance
+    "custom_base_url_history": [],  # every URL ever typed here, most recent first — lets the
+                                     # person pick from a dropdown (e.g. switching between a
+                                     # service's "main" and "RU" endpoint) instead of retyping
     "use_families": True,          # False = ignore families entirely, use all 8 custom_models slots
     "selected_families": [],
     "family_model_choice": {},     # {family_key: chosen model_id}

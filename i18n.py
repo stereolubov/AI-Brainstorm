@@ -206,9 +206,9 @@ _BUILTIN_TRANSLATIONS = {
         "reasoning_label": "Рассуждения:",
         "reasoning_raw_label": "Рассуждения (JSON, необязательно):",
 
-        "cost_line": "(стоимость реплики: ${cost})",
-        "cost_line_with_moderator": "(стоимость реплики: ${cost} + ведущий ${mod} = ${total})",
-        "cost_line_summary": "(стоимость итога: ${cost})",
+        "cost_line": "(стоимость реплики: {cost})",
+        "cost_line_with_moderator": "(стоимость реплики: {cost} + ведущий {mod} = {total})",
+        "cost_line_summary": "(стоимость итога: {cost})",
 
         "show_log_tab_checkbox": "Показывать вкладку «Лог» (техническая информация о работе программы)",
         "saved_confirmation": "Сохранено ✓",
@@ -309,17 +309,17 @@ _BUILTIN_TRANSLATIONS = {
         "select_min_models_in_settings": "На вкладке «Настройки» выберите минимум {min} моделей.",
         "enter_topic_warning": "Введите тему обсуждения.",
         "user_topic_label": "Пользователь (тема)",
-        "spent_status": "Потрачено: {spent} из ${budget}",
+        "spent_status": "Потрачено: {spent} из {budget}",
         "discussion_in_progress": "Идёт обсуждение…",
         "log_session_started": (
             "Старт сессии: тема={topic!r}, участников={count}, ведущий={mode}, "
-            "макс.реплик={max_replies}, бюджет=${budget}, итог={summary}"
+            "макс.реплик={max_replies}, бюджет={budget}, итог={summary}"
         ),
         "error_speaker_suffix": "{label} (ошибка)",
         "system_label": "Система",
         "discussion_finished": "Обсуждение завершено.",
 
-        "budget_limit_reached": "Достигнут лимит бюджета сессии (${budget}).",
+        "budget_limit_reached": "Достигнут лимит бюджета сессии ({budget}).",
         "reply_limit_reached": "Достигнут лимит числа реплик ({max_replies}).",
         "session_ended_by_user": "Сессия завершена пользователем.",
         "safety_loop_limit_reached": (
@@ -360,7 +360,8 @@ _BUILTIN_TRANSLATIONS = {
             " (для {count} реплик провайдер не вернул точную стоимость — "
             "реальный расход мог быть чуть выше)"
         ),
-        "log_session_finished": "Сессия завершена: {reason} Всего потрачено: ${total}",
+        "cost_reconciliation_note": " Отслежено нами: {tracked}, реально списано: {actual}.",
+        "log_session_finished": "Сессия завершена: {reason} Всего потрачено: {total}",
 
         "tab_settings": "Настройки",
         "tab_chat": "Чат",
@@ -468,14 +469,15 @@ _BUILTIN_TRANSLATIONS = {
         "status_web_lookup": "Ведущий проверяет интернет…",
         "web_lookup_label": "Проверка интернета ({model})",
         "web_lookup_transcript_entry": "Ведущий (проверка интернета): {text}",
-        "cost_line_web_lookup": "(стоимость проверки интернета: ${cost})",
+        "cost_line_web_lookup": "(стоимость проверки интернета: {cost})",
         "log_web_lookup_failed": "Не удалось выполнить проверку интернета: {error}",
         "key_limit_not_set": "лимит на ключ не задан (смотрите общий баланс на сайте провайдера)",
-        "key_limit_set": "лимит ключа ${limit}, остаток ${remaining}",
+        "key_limit_set": "лимит ключа {limit}, остаток {remaining}",
         "key_balance_text": "Потрачено всего с ключа: {usage}  •  {limit_text}",
+        "key_balance_polza_text": "Остаток на балансе: {balance}",
 
         "budget_block_title": "Бюджет",
-        "session_budget_label": "Лимит расходов на одну сессию, $:",
+        "session_budget_label": "Лимит расходов на одну сессию, {currency}:",
         "session_budget_hint": (
             "— если суммарная стоимость реплик (включая вызовы ведущего) "
             "превысит лимит, обсуждение остановится автоматически."
@@ -587,9 +589,9 @@ _BUILTIN_TRANSLATIONS = {
         "reasoning_label": "Reasoning:",
         "reasoning_raw_label": "Reasoning (JSON, optional):",
 
-        "cost_line": "(reply cost: ${cost})",
-        "cost_line_with_moderator": "(reply cost: ${cost} + moderator ${mod} = ${total})",
-        "cost_line_summary": "(summary cost: ${cost})",
+        "cost_line": "(reply cost: {cost})",
+        "cost_line_with_moderator": "(reply cost: {cost} + moderator {mod} = {total})",
+        "cost_line_summary": "(summary cost: {cost})",
 
         "show_log_tab_checkbox": "Show the \"Log\" tab (technical information about how the app is running)",
         "saved_confirmation": "Saved ✓",
@@ -689,17 +691,17 @@ _BUILTIN_TRANSLATIONS = {
         "select_min_models_in_settings": "On the Settings tab, select at least {min} models.",
         "enter_topic_warning": "Enter a discussion topic.",
         "user_topic_label": "User (topic)",
-        "spent_status": "Spent: {spent} of ${budget}",
+        "spent_status": "Spent: {spent} of {budget}",
         "discussion_in_progress": "Discussion in progress…",
         "log_session_started": (
             "Session started: topic={topic!r}, participants={count}, moderator={mode}, "
-            "max replies={max_replies}, budget=${budget}, summary={summary}"
+            "max replies={max_replies}, budget={budget}, summary={summary}"
         ),
         "error_speaker_suffix": "{label} (error)",
         "system_label": "System",
         "discussion_finished": "Discussion finished.",
 
-        "budget_limit_reached": "Session budget limit reached (${budget}).",
+        "budget_limit_reached": "Session budget limit reached ({budget}).",
         "reply_limit_reached": "Reply limit reached ({max_replies}).",
         "session_ended_by_user": "Session ended by the user.",
         "safety_loop_limit_reached": (
@@ -740,7 +742,8 @@ _BUILTIN_TRANSLATIONS = {
             " (for {count} replies the provider didn't return an exact "
             "cost — actual spend may have been a bit higher)"
         ),
-        "log_session_finished": "Session finished: {reason} Total spent: ${total}",
+        "cost_reconciliation_note": " Tracked by us: {tracked}, actually charged: {actual}.",
+        "log_session_finished": "Session finished: {reason} Total spent: {total}",
 
         "tab_settings": "Settings",
         "tab_chat": "Chat",
@@ -845,14 +848,15 @@ _BUILTIN_TRANSLATIONS = {
         "status_web_lookup": "The moderator is checking the web…",
         "web_lookup_label": "Web check ({model})",
         "web_lookup_transcript_entry": "Moderator (web check): {text}",
-        "cost_line_web_lookup": "(web check cost: ${cost})",
+        "cost_line_web_lookup": "(web check cost: {cost})",
         "log_web_lookup_failed": "Could not complete the web check: {error}",
         "key_limit_not_set": "no limit set on this key (see your overall balance on the provider's site)",
-        "key_limit_set": "key limit ${limit}, remaining ${remaining}",
+        "key_limit_set": "key limit {limit}, remaining {remaining}",
         "key_balance_text": "Total spent with this key: {usage}  •  {limit_text}",
+        "key_balance_polza_text": "Remaining balance: {balance}",
 
         "budget_block_title": "Budget",
-        "session_budget_label": "Spending limit per session, $:",
+        "session_budget_label": "Spending limit per session, {currency}:",
         "session_budget_hint": (
             "— if the total cost of replies (including moderator calls) "
             "exceeds the limit, the discussion stops automatically."

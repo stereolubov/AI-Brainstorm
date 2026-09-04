@@ -39,7 +39,7 @@ from api_client import (
 import i18n
 from i18n import t
 import theme
-from providers import PROVIDERS, DEFAULT_PROVIDER, get_provider, provider_ids_in_order
+from providers import PROVIDERS, DEFAULT_PROVIDER, get_provider, provider_ids_in_order, format_money, CURRENCY_SYMBOLS
 
 logger = logging.getLogger("ai_brainstorm")
 logger.setLevel(logging.DEBUG)
@@ -667,9 +667,14 @@ class SettingsTab(ttk.Frame):
             url_row = ttk.Frame(frame)
             url_row.pack(fill="x", pady=(0, 8))
             ttk.Label(url_row, text=t("custom_base_url_label")).pack(side="left")
-            ttk.Entry(url_row, textvariable=self.custom_base_url_var, width=45).pack(
-                side="left", padx=(8, 0)
+            url_history = self.config_data.get("custom_base_url_history", []) or []
+            url_combo = ttk.Combobox(
+                url_row, textvariable=self.custom_base_url_var,
+                values=_sorted_with_current(url_history, self.custom_base_url_var.get()),
+                width=43, state="normal",
             )
+            url_combo.pack(side="left", padx=(8, 0))
+            self._protect_from_wheel(url_combo)
             ttk.Label(
                 frame, text=t("custom_provider_warning"),
                 foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
@@ -721,9 +726,26 @@ class SettingsTab(ttk.Frame):
     def _on_api_provider_selected(self, _event=None):
         name = self.api_provider_var.get()
         provider_id = self._provider_name_to_id.get(name)
-        if not provider_id or provider_id == self.config_data.get("api_provider", DEFAULT_PROVIDER):
+        old_provider_id = self.config_data.get("api_provider", DEFAULT_PROVIDER)
+        if not provider_id or provider_id == old_provider_id:
             return
+        old_currency = get_provider(old_provider_id).get("currency", "USD")
+        new_currency = get_provider(provider_id).get("currency", "USD")
         self.config_data["api_provider"] = provider_id
+
+        # Rescale the budget so a custom value survives a currency switch
+        # roughly intact, instead of e.g. "$2" carrying over unchanged as
+        # "2 ₽" and making the session hit its budget almost immediately.
+        # A flat ×100 for USD<->RUB is a rough approximation, not a live
+        # exchange rate — good enough for a spending ceiling, not meant
+        # to be precise.
+        if old_currency != new_currency:
+            current_budget = self.config_data.get("session_budget_usd", 0.5)
+            if old_currency == "USD" and new_currency == "RUB":
+                self.config_data["session_budget_usd"] = round(current_budget * 100, 2)
+            elif old_currency == "RUB" and new_currency == "USD":
+                self.config_data["session_budget_usd"] = round(current_budget / 100, 4)
+
         # Cached model lists belong to the OLD provider's catalog — stale
         # and possibly nonsensical for the new one (different IDs
         # entirely), so clear them rather than risk showing garbage;
@@ -748,28 +770,49 @@ class SettingsTab(ttk.Frame):
             messagebox.showwarning(APP_TITLE, t("enter_api_key_first"))
             return
         self.balance_label.config(text=t("checking_ellipsis"))
-        base_url = self._current_provider()["base_url"]
+        provider = self._current_provider()
+        base_url = provider["base_url"]
+        key_info_path = provider.get("key_info_path", "/key")
+        key_info_format = provider.get("key_info_format", "openrouter")
+        currency = provider.get("currency", "USD")
 
         def worker():
             try:
-                info = get_key_info(api_key, base_url=base_url)
+                info = get_key_info(
+                    api_key, base_url=base_url,
+                    key_info_path=key_info_path, key_info_format=key_info_format,
+                )
             except OpenRouterError as e:
                 self.after(0, lambda: self.balance_label.config(
                     text=t("error_prefix", error=e), foreground="#c62828"
                 ))
                 return
 
-            usage = info.get("usage")
-            limit = info.get("limit")
-            remaining = info.get("limit_remaining")
-
-            usage_text = f"${usage:.4f}" if isinstance(usage, (int, float)) else t("not_available_abbr")
-            if limit is None:
-                limit_text = t("key_limit_not_set")
+            if key_info_format == "polza":
+                # Prepaid-balance model — no "usage so far" or optional
+                # cap concept like OpenRouter's, just "how much is left".
+                balance = info.get("balance")
+                if isinstance(balance, (int, float)):
+                    text = t("key_balance_polza_text", balance=format_money(balance, currency, decimals=2))
+                else:
+                    text = t("not_available_abbr")
             else:
-                limit_text = t("key_limit_set", limit=f"{limit:.2f}", remaining=f"{remaining:.4f}")
+                usage = info.get("usage")
+                limit = info.get("limit")
+                remaining = info.get("limit_remaining")
 
-            text = t("key_balance_text", usage=usage_text, limit_text=limit_text)
+                usage_text = format_money(usage, currency) if isinstance(usage, (int, float)) else t("not_available_abbr")
+                if limit is None:
+                    limit_text = t("key_limit_not_set")
+                else:
+                    limit_text = t(
+                        "key_limit_set",
+                        limit=format_money(limit, currency, decimals=2),
+                        remaining=format_money(remaining, currency),
+                    )
+
+                text = t("key_balance_text", usage=usage_text, limit_text=limit_text)
+
             self.after(0, lambda: self.balance_label.config(text=text, foreground=theme.get_palette(get_theme_code())["muted_fg"]))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -789,7 +832,8 @@ class SettingsTab(ttk.Frame):
         frame = ttk.LabelFrame(self.content, text=t("budget_block_title"), padding=10)
         frame.pack(fill="x", pady=(0, 10))
 
-        ttk.Label(frame, text=t("session_budget_label")).pack(side="left")
+        currency_symbol = CURRENCY_SYMBOLS.get(self._current_provider().get("currency", "USD"), "$")
+        ttk.Label(frame, text=t("session_budget_label", currency=currency_symbol)).pack(side="left")
         ttk.Entry(frame, textvariable=self.budget_var, width=8).pack(
             side="left", padx=(6, 0)
         )
@@ -1365,9 +1409,16 @@ class SettingsTab(ttk.Frame):
             messagebox.showwarning(APP_TITLE, t("invalid_budget_warning"))
             return None
 
+        new_base_url = self.custom_base_url_var.get().strip()
+        url_history = [u for u in self.config_data.get("custom_base_url_history", []) if u != new_base_url]
+        if new_base_url:
+            url_history.insert(0, new_base_url)
+        url_history = url_history[:8]  # a handful of recent URLs is plenty — this isn't meant to be a full log
+
         return {
             "api_key": self.api_key_var.get().strip(),
-            "custom_base_url": self.custom_base_url_var.get().strip(),
+            "custom_base_url": new_base_url,
+            "custom_base_url_history": url_history,
             "use_families": use_families,
             "selected_families": selected_families,
             "family_model_choice": family_model_choice,
@@ -1818,7 +1869,8 @@ class ChatTab(ttk.Frame):
 
         self._ensure_model_tags(full_catalog)
 
-        self.cost_var.set(t("spent_status", spent="$0.0000", budget=f"{budget:.2f}"))
+        currency = current_provider.get("currency", "USD")
+        self.cost_var.set(t("spent_status", spent=format_money(0, currency), budget=format_money(budget, currency, decimals=2)))
         self.status_var.set(t("discussion_in_progress"))
         self.start_button.config(state="disabled")
         if moderator_mode == "human":
@@ -1845,11 +1897,40 @@ class ChatTab(ttk.Frame):
         )
         self.worker_thread.start()
 
+    def _get_spend_snapshot(self, api_key, provider):
+        """Returns the current usage/balance indicator for end-of-session
+        reconciliation, or None if unavailable (provider doesn't support
+        it, or the snapshot request itself failed — a network hiccup
+        here just means we skip showing "actually charged" at the end,
+        not a session-ending error)."""
+        if not provider.get("has_key_info"):
+            return None
+        try:
+            info = get_key_info(
+                api_key, base_url=provider["base_url"],
+                key_info_path=provider.get("key_info_path", "/key"),
+                key_info_format=provider.get("key_info_format", "openrouter"),
+            )
+        except OpenRouterError:
+            return None
+        if provider.get("key_info_format") == "polza":
+            value = info.get("balance")
+        else:
+            value = info.get("usage")
+        return value if isinstance(value, (int, float)) else None
+
     def _run_worker(self, api_key, full_catalog, topic, max_replies, budget,
                      moderator_mode, moderator_model, user_participation, moderator_summary,
                      moderator_web_lookup, base_url, reasoning_format):
         """Runs in the background thread — doesn't block the UI."""
         current_provider = _resolve_provider(self.config_data)
+        currency = current_provider.get("currency", "USD")
+        # Snapshotted now (before any requests go out) and again at the
+        # very end — the difference is the REAL amount charged by the
+        # provider, catching spend our own client-side tracking misses
+        # entirely (e.g. a request that timed out on our side but still
+        # got processed and billed on theirs). See _get_spend_snapshot.
+        start_spend_snapshot = self._get_spend_snapshot(api_key, current_provider)
         transcript_lines = []
         total_cost = 0.0
         pending_moderator_cost = 0.0  # accumulates, shown together with the next visible reply
@@ -1901,12 +1982,12 @@ class ChatTab(ttk.Frame):
                 lookup_shown = lookup_text
                 if isinstance(lookup_cost, (int, float)):
                     total_cost += lookup_cost
-                    lookup_shown += f"{_COST_MARKER}{t('cost_line_web_lookup', cost=f'{lookup_cost:.4f}')}"
+                    lookup_shown += f"{_COST_MARKER}{t('cost_line_web_lookup', cost=format_money(lookup_cost, currency))}"
                 model_short = short_model_name(moderator_model)
                 self.ui_queue.put((
                     "message", t("web_lookup_label", model=model_short), "web_lookup", lookup_shown,
                 ))
-                self.ui_queue.put(("cost", f"${total_cost:.4f}", str(budget), None))
+                self.ui_queue.put(("cost", format_money(total_cost, currency), format_money(budget, currency, decimals=2), None))
                 # Folded into the transcript (not just shown once in chat)
                 # so every participant sees it from their very first reply.
                 transcript_lines.append(t("web_lookup_transcript_entry", text=lookup_text))
@@ -1919,7 +2000,7 @@ class ChatTab(ttk.Frame):
                 finish_reason = t("safety_loop_limit_reached")
                 break
             if total_cost >= budget:
-                finish_reason = t("budget_limit_reached", budget=f"{budget:.2f}")
+                finish_reason = t("budget_limit_reached", budget=format_money(budget, currency, decimals=2))
                 break
             if replies_done >= max_replies:
                 finish_reason = t("reply_limit_reached", max_replies=max_replies)
@@ -2008,7 +2089,7 @@ class ChatTab(ttk.Frame):
                 if isinstance(mod_cost, (int, float)):
                     total_cost += mod_cost
                     pending_moderator_cost += mod_cost
-                    self.ui_queue.put(("cost", f"${total_cost:.4f}", str(budget), None))
+                    self.ui_queue.put(("cost", format_money(total_cost, currency), format_money(budget, currency, decimals=2), None))
 
                 next_id = decision["next"]
                 task, reaction_type, wrap_up = decision["task"], decision["reaction_type"], decision["wrap_up"]
@@ -2085,11 +2166,11 @@ class ChatTab(ttk.Frame):
                     display_cost = cost + pending_moderator_cost
                     cost_line = t(
                         "cost_line_with_moderator",
-                        cost=f"{cost:.4f}", mod=f"{pending_moderator_cost:.4f}",
-                        total=f"{display_cost:.4f}",
+                        cost=format_money(cost, currency), mod=format_money(pending_moderator_cost, currency),
+                        total=format_money(display_cost, currency),
                     )
                 else:
-                    cost_line = t("cost_line", cost=f"{cost:.4f}")
+                    cost_line = t("cost_line", cost=format_money(cost, currency))
                 pending_moderator_cost = 0.0
                 reply_shown = f"{reply}{_COST_MARKER}{cost_line}"
             else:
@@ -2101,7 +2182,7 @@ class ChatTab(ttk.Frame):
             last_speaker_id = next_id
 
             self.ui_queue.put(("message", label, next_id, reply_shown))
-            self.ui_queue.put(("cost", f"${total_cost:.4f}", str(budget), None))
+            self.ui_queue.put(("cost", format_money(total_cost, currency), format_money(budget, currency, decimals=2), None))
             transcript_lines.append(t("transcript_reply_line", label=label, reply=reply))
 
         if moderator_summary and transcript_lines:
@@ -2118,7 +2199,7 @@ class ChatTab(ttk.Frame):
                 summary_cost = summary_usage.get("cost")
                 if isinstance(summary_cost, (int, float)):
                     total_cost += summary_cost
-                    summary_text += f"{_COST_MARKER}{t('cost_line_summary', cost=f'{summary_cost:.4f}')}"
+                    summary_text += f"{_COST_MARKER}{t('cost_line_summary', cost=format_money(summary_cost, currency))}"
                 model_short = short_model_name(moderator_model)
                 self.ui_queue.put((
                     "message", t("moderator_summary_label", model=model_short), "summary", summary_text,
@@ -2128,7 +2209,27 @@ class ChatTab(ttk.Frame):
 
         if cost_unknown_calls and current_provider.get("has_cost_tracking", True):
             finish_reason += t("unknown_cost_note", count=cost_unknown_calls)
-        logger.info(t("log_session_finished", reason=finish_reason, total=f"{total_cost:.4f}"))
+
+        # Reconcile against the provider's own records, if possible —
+        # catches spend our client-side tracking missed (e.g. requests
+        # that errored/timed out on our end but were still processed
+        # and billed on theirs). Silently skipped if either snapshot
+        # failed or wasn't available.
+        end_spend_snapshot = self._get_spend_snapshot(api_key, current_provider)
+        if start_spend_snapshot is not None and end_spend_snapshot is not None:
+            key_info_format = current_provider.get("key_info_format", "openrouter")
+            if key_info_format == "polza":
+                # Prepaid balance — spending DECREASES it.
+                actual_spent = start_spend_snapshot - end_spend_snapshot
+            else:
+                # OpenRouter-style cumulative usage — spending INCREASES it.
+                actual_spent = end_spend_snapshot - start_spend_snapshot
+            finish_reason += t(
+                "cost_reconciliation_note",
+                tracked=format_money(total_cost, currency), actual=format_money(actual_spent, currency),
+            )
+
+        logger.info(t("log_session_finished", reason=finish_reason, total=format_money(total_cost, currency)))
         self.ui_queue.put(("finished", finish_reason, None, None))
 
     def _poll_queue(self):
@@ -2144,7 +2245,7 @@ class ChatTab(ttk.Frame):
                     self._append_log(t("error_speaker_suffix", label=label), "error", text)
                 elif kind == "cost":
                     spent, budget_str = label, tag
-                    self.cost_var.set(t("spent_status", spent=spent, budget=f"{float(budget_str):.2f}"))
+                    self.cost_var.set(t("spent_status", spent=spent, budget=budget_str))
                 elif kind == "ui_request":
                     self._show_input_panel(mode=label, payload=tag)
                 elif kind == "finished":

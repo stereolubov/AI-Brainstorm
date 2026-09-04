@@ -33,6 +33,26 @@ completions endpoint), confirmed against Requesty's own docs
   work with whichever model the user picked as moderator, this doesn't
   drop in cleanly; deferred rather than restricting moderator choice.
 
+Polza.ai is the closest match to OpenRouter's own API surface we've
+found — confirmed against its own docs (polza.ai/docs), not assumed:
+same "provider/model" ID convention (families work), the SAME nested
+{"reasoning": {"max_tokens": N}} shape (their docs show it accepts
+richer sub-fields too, like "effort"/"type" for newer adaptive-thinking
+models, but our existing OpenRouter-style payload is valid as-is), and
+the exact same "web" plugin syntax (plugins: [{"id": "web", "max_results": N}]).
+usage.cost is confirmed present too (alongside a "cost_rub" alias).
+Genuinely no code changes were needed for any of this — reasoning_format
+"tokens" and has_web_plugin=True just work, unlike every other
+non-OpenRouter provider we've checked. Balance now implemented via
+GET /v1/balance -> {"amount": "..."} — a genuinely different shape
+from OpenRouter's /key, handled through key_info_format="polza"
+(see api_client.get_key_info). Its balance and per-request cost are
+both denominated in RUB, not USD — see the "currency" field below and
+theme.format_money(), used everywhere a cost/budget is displayed
+instead of a hardcoded "$". The free-models filter isn't offered
+either, but for a different reason than Requesty: Polza simply doesn't
+have any $0 models in its catalog, so there'd be nothing to filter to.
+
 Custom covers any other OpenAI-compatible endpoint (local servers like
 LM Studio/Ollama, a self-hosted proxy, etc.) — genuinely unknowable in
 advance, so it makes no promises: no families (its ID convention is
@@ -49,10 +69,13 @@ PROVIDERS = {
     "openrouter": {
         "name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
+        "currency": "USD",
         "has_pricing_data": True,     # /models includes per-model pricing -> free-models filter works
         "has_cost_tracking": True,    # usage.cost in every response -> budget UI is meaningful
         "has_web_plugin": True,       # plugins: [{"id": "web"}] web-search support, any model
         "has_key_info": True,         # single-token GET /key for balance checking
+        "key_info_path": "/key",
+        "key_info_format": "openrouter",  # {"data": {"usage", "limit", "limit_remaining", "label"}}
         "uses_families": True,
         "reasoning_format": "tokens",  # {"reasoning": {"max_tokens": N}} / {"enabled": false}
         "models_docs_url": "https://openrouter.ai/models",
@@ -61,6 +84,7 @@ PROVIDERS = {
     "requesty": {
         "name": "Requesty",
         "base_url": "https://router.requesty.ai/v1",
+        "currency": "USD",
         "has_pricing_data": False,    # /models doesn't return pricing — no free-models filter
         "has_cost_tracking": True,    # usage.cost confirmed in every response too (same field name
                                        # as OpenRouter) — separate from has_pricing_data above, which
@@ -74,9 +98,30 @@ PROVIDERS = {
         "models_docs_url": "https://www.requesty.ai/models",
         "reasoning_docs_url": "https://docs.requesty.ai/features/reasoning",
     },
+    "polza": {
+        "name": "Polza.ai",
+        "base_url": "https://polza.ai/api/v1",
+        "currency": "RUB",  # both balance and usage.cost are rubles here, not dollars — see
+                            # theme.format_money(), used everywhere instead of a hardcoded "$"
+        "has_pricing_data": False,    # /models does have pricing, just nested very differently
+                                       # (top_provider.pricing.prompt_per_million, RUB) — moot anyway,
+                                       # since Polza's catalog has no $0 models to filter to
+        "has_cost_tracking": True,    # usage.cost (and a usage.cost_rub alias) confirmed present
+        "has_web_plugin": True,       # plugins: [{"id": "web", "max_results": N}] — same syntax as
+                                       # OpenRouter's, confirmed working for any model, not per-family
+        "has_key_info": True,         # GET /v1/balance -> {"amount": "..."} — a genuinely different
+        "key_info_path": "/balance",  # shape from OpenRouter's /key (see key_info_format below),
+        "key_info_format": "polza",   # but simple enough to implement properly rather than defer
+        "uses_families": True,
+        "reasoning_format": "tokens",  # same nested {"reasoning": {"max_tokens": N}} shape as
+                                       # OpenRouter — confirmed compatible with our existing payload
+        "models_docs_url": "https://polza.ai/models",
+        "reasoning_docs_url": "https://polza.ai/docs/osobennosti/reasoning-tokens",
+    },
     "custom": {
         "name": "Custom",
         "base_url": None,   # unknowable in advance — user types their own (see config's custom_base_url)
+        "currency": "USD",  # never actually shown — has_cost_tracking=False hides all cost/budget UI
         "has_pricing_data": False,
         "has_cost_tracking": False,  # local/self-hosted servers essentially never report a $ cost —
                                       # budget UI (session budget field, running spent/total in Chat)
@@ -102,3 +147,23 @@ def get_provider(provider_id):
 def provider_ids_in_order():
     """Stable display order — OpenRouter first (the default/richest), then the rest."""
     return [DEFAULT_PROVIDER] + [pid for pid in PROVIDERS if pid != DEFAULT_PROVIDER]
+
+
+CURRENCY_SYMBOLS = {"USD": "$", "RUB": "₽"}
+
+
+def format_money(amount, currency="USD", decimals=4):
+    """
+    Formats a monetary amount with the right symbol AND position for the
+    currency — used everywhere a cost/budget is displayed instead of a
+    hardcoded "$", since Polza.ai's balance and per-request cost are
+    both denominated in RUB, not USD.
+
+    "$" goes before the number (Western convention: "$0.0043"); "₽"
+    goes after with a space (Russian convention: "0.0043 ₽").
+    """
+    symbol = CURRENCY_SYMBOLS.get(currency, "$")
+    formatted = f"{amount:.{decimals}f}"
+    if currency == "RUB":
+        return f"{formatted} {symbol}"
+    return f"{symbol}{formatted}"

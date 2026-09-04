@@ -192,13 +192,37 @@ def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_
     return content, usage
 
 
-def get_key_info(api_key, base_url=DEFAULT_BASE_URL):
-    """Returns {usage, limit, limit_remaining, label} for the given key.
-    Only meaningful for providers with has_key_info=True (see providers.py) —
-    the caller is responsible for not exposing this action otherwise."""
+def get_key_info(api_key, base_url=DEFAULT_BASE_URL, key_info_path="/key", key_info_format="openrouter"):
+    """
+    Returns balance/usage info for the given key. Shape depends on
+    key_info_format (see providers.py — only meaningful for providers
+    with has_key_info=True; the caller is responsible for not exposing
+    this action otherwise):
+
+      "openrouter" — {usage, limit, limit_remaining, label}, from
+        GET {base_url}/key -> {"data": {...}}. "usage" is cumulative
+        spend so far; "limit"/"limit_remaining" are None if the key has
+        no cap set (pay-as-you-go).
+
+      "polza" — {balance}, from GET {base_url}/balance ->
+        {"amount": "9.28591714"} (a string). Polza's model is a prepaid
+        balance, not a usage/cap pair — there's no equivalent of
+        OpenRouter's "usage so far" or an optional limit, just "how
+        much is left". Denominated in RUB, not USD (see providers.py's
+        "currency" field and providers.format_money()).
+    """
     if not api_key:
         raise OpenRouterError(t("no_api_key_short_error"))
-    result = _request(f"{base_url}/key", api_key, method="GET")
+    result = _request(f"{base_url}{key_info_path}", api_key, method="GET")
+
+    if key_info_format == "polza":
+        amount = result.get("amount")
+        try:
+            balance = float(amount) if amount is not None else None
+        except (TypeError, ValueError):
+            balance = None
+        return {"balance": balance}
+
     data = result.get("data", {})
     return {
         "usage": data.get("usage"),
