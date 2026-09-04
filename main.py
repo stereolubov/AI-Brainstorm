@@ -1812,6 +1812,7 @@ class ChatTab(ttk.Frame):
 
     def _intervene_clicked(self):
         self.intervene_requested = True
+        self.intervene_button.config(state="disabled")
         self.status_var.set(t("intervene_pending_status"))
         logger.info(t("log_intervene_requested"))
 
@@ -1951,6 +1952,31 @@ class ChatTab(ttk.Frame):
             pool = pool or full_catalog
             return min(pool, key=lambda p: speak_counts[p["participant_id"]])["participant_id"]
 
+        def process_intervene_if_pending():
+            """Checked both at the top of the loop AND right after the
+            moderator's own decision call resolves (not just once per
+            full iteration) — halves the worst-case wait before an
+            intervention actually shows up, since a full iteration can
+            otherwise involve TWO back-to-back blocking network calls
+            (moderator decision, then participant reply) before this
+            gets rechecked. Returns True if something was pending and
+            got handled — the caller should `continue` the loop right after."""
+            if not self.intervene_requested:
+                return False
+            self.intervene_requested = False
+            resp = self._sync_ui_request("intervene")
+            # Handled either way (submitted or closed) — button becomes
+            # clickable again now that the request is no longer queued.
+            self.after(0, lambda: self.intervene_button.config(state="normal"))
+            if not resp or resp.get("action") == "end":
+                self.abort_requested = True
+                return True
+            clarification = (resp.get("text") or "").strip()
+            if clarification:
+                transcript_lines.append(t("user_clarification_transcript", text=clarification))
+                self.ui_queue.put(("message", t("user_label"), "user_note", clarification))
+            return True
+
         just_invited_user = False  # prevents the moderator from inviting
                                     # the user two turns in a row — user
                                     # turns don't count toward replies_done,
@@ -2009,16 +2035,7 @@ class ChatTab(ttk.Frame):
                 finish_reason = t("session_ended_by_user")
                 break
 
-            if self.intervene_requested:
-                self.intervene_requested = False
-                resp = self._sync_ui_request("intervene")
-                if not resp or resp.get("action") == "end":
-                    self.abort_requested = True
-                    continue
-                clarification = (resp.get("text") or "").strip()
-                if clarification:
-                    transcript_lines.append(t("user_clarification_transcript", text=clarification))
-                    self.ui_queue.put(("message", t("user_label"), "user_note", clarification))
+            if process_intervene_if_pending():
                 continue
 
             transcript = "\n".join(transcript_lines) if transcript_lines else t("discussion_just_starting")
@@ -2105,6 +2122,15 @@ class ChatTab(ttk.Frame):
                     wrap_up = True
                     if not task:
                         task = t("final_summary_task")
+
+            # Second check point — the moderator's decision call above
+            # (or the human "choose speaker" wait) has just resolved, but
+            # the participant reply call below is ANOTHER full blocking
+            # network call. Checking again here — not just once at the
+            # very top of the loop — means an intervention doesn't have
+            # to wait through both back-to-back before it's noticed.
+            if process_intervene_if_pending():
+                continue
 
             if next_id == "user":
                 just_invited_user = True
@@ -2200,6 +2226,7 @@ class ChatTab(ttk.Frame):
                 if isinstance(summary_cost, (int, float)):
                     total_cost += summary_cost
                     summary_text += f"{_COST_MARKER}{t('cost_line_summary', cost=format_money(summary_cost, currency))}"
+                    self.ui_queue.put(("cost", format_money(total_cost, currency), format_money(budget, currency, decimals=2), None))
                 model_short = short_model_name(moderator_model)
                 self.ui_queue.put((
                     "message", t("moderator_summary_label", model=model_short), "summary", summary_text,
