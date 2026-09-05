@@ -85,7 +85,7 @@ _TOKENS_TO_EFFORT = {
 
 def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_MAX_TOKENS,
               reasoning_max_tokens=None, web_search_max_results=None, base_url=DEFAULT_BASE_URL,
-              reasoning_format="tokens", reasoning_raw=None):
+              reasoning_format="tokens", reasoning_raw=None, image_data_url=None):
     """
     Sends a single chat request to `model_id` via the given provider's
     OpenAI-compatible chat completions endpoint (base_url + "/chat/completions").
@@ -125,6 +125,16 @@ def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_
     providers with has_web_plugin=True — the caller is responsible for
     not passing this otherwise (see providers.py).
 
+    image_data_url: if set, a "data:image/...;base64,..." URL attached
+    to the user message via the standard OpenAI-compatible multi-part
+    content shape ({"type": "image_url", "image_url": {"url": ...}}) —
+    unlike reasoning/web search, this format is genuinely uniform across
+    every provider we support (all OpenAI-compatible), so no
+    per-provider translation is needed. Models without vision support
+    typically either ignore the image or the call errors out — handled
+    the same as any other model failure by the caller (cooldown + retry
+    with someone else), not something we can detect in advance.
+
     Returns (reply_text, usage), where usage is
     {"prompt_tokens": int, "completion_tokens": int, "cost": float|None}.
     Requesty returns "cost" under this exact same key too (confirmed
@@ -135,11 +145,18 @@ def ask_model(api_key, model_id, system_prompt, user_prompt, max_tokens=DEFAULT_
     if not api_key:
         raise OpenRouterError(t("no_api_key_error"))
 
+    user_content = user_prompt
+    if image_data_url:
+        user_content = [
+            {"type": "text", "text": user_prompt},
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ]
+
     payload = {
         "model": model_id,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_content},
         ],
         "max_tokens": max_tokens,
     }

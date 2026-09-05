@@ -9,7 +9,9 @@ Build:  pyinstaller --onefile --windowed --icon=favicon.ico --add-data "favicon.
 Standard library only — no pip installs required.
 """
 
+import base64
 import logging
+import mimetypes
 import os
 import queue
 import re
@@ -1472,6 +1474,13 @@ class ChatTab(ttk.Frame):
         self._pending_event = None
         self._pending_response = None
 
+        # Optional image attached to the topic — sent to every PARTICIPANT
+        # reply (not moderator calls, which only need the text transcript
+        # to pick who speaks next). Built once at attach time and reused
+        # for the whole session rather than re-reading the file per call.
+        self.attached_image_path = None
+        self.attached_image_data_url = None
+
         self._build_controls()
         self._build_input_panel()
         self._build_chat_log()
@@ -1493,6 +1502,21 @@ class ChatTab(ttk.Frame):
             "a": lambda e: self._select_all_topic(),
         }))
         self.topic_text.bind("<Button-1>", lambda e: self.topic_text.focus_set())
+
+        image_row = ttk.Frame(topic_frame)
+        image_row.pack(fill="x", pady=(4, 0))
+        ttk.Button(
+            image_row, text=t("attach_image_button"), command=self._attach_image_clicked
+        ).pack(side="left")
+        self.attached_image_label = ttk.Label(
+            image_row, text="", foreground=theme.get_palette(get_theme_code())["muted_fg"]
+        )
+        self.attached_image_label.pack(side="left", padx=(8, 0))
+        self.remove_image_button = ttk.Button(
+            image_row, text=t("remove_image_button"), command=self._remove_image_clicked, width=3,
+        )
+        # Not packed until something is actually attached — see
+        # _update_image_attachment_display().
 
         settings_row = ttk.Frame(self)
         settings_row.pack(fill="x", pady=(0, 6))
@@ -1527,6 +1551,55 @@ class ChatTab(ttk.Frame):
         self.cost_var = tk.StringVar(value="")
         if _resolve_provider(self.config_data).get("has_cost_tracking", True):
             ttk.Label(status_row, textvariable=self.cost_var, foreground="#2e7d32").pack(side="right")
+
+    # ---------- Image attachment ----------
+
+    def _attach_image_clicked(self):
+        path = filedialog.askopenfilename(
+            title=t("attach_image_dialog_title"),
+            filetypes=[(t("image_files_filter"), "*.png *.jpg *.jpeg *.gif *.webp *.bmp")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            messagebox.showwarning(APP_TITLE, t("image_read_error", error=e))
+            return
+
+        mime_type, _ = mimetypes.guess_type(path)
+        if not mime_type or not mime_type.startswith("image/"):
+            mime_type = "image/png"  # reasonable fallback — most APIs sniff actual content anyway
+
+        # No resizing/compression on purpose — that needs an image
+        # library beyond the standard library this app is built on. A
+        # size warning is the honest alternative: let the person decide
+        # whether a large file is worth the extra request cost, rather
+        # than silently degrading quality or silently sending something huge.
+        size_mb = len(data) / (1024 * 1024)
+        if size_mb > 5 and not messagebox.askyesno(APP_TITLE, t("image_large_warning", size=f"{size_mb:.1f}")):
+            return
+
+        self.attached_image_path = path
+        self.attached_image_data_url = f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
+        self._update_image_attachment_display()
+        logger.info(t("log_image_attached", filename=os.path.basename(path), size=f"{size_mb:.2f}"))
+
+    def _remove_image_clicked(self):
+        self.attached_image_path = None
+        self.attached_image_data_url = None
+        self._update_image_attachment_display()
+        logger.info(t("log_image_removed"))
+
+    def _update_image_attachment_display(self):
+        if self.attached_image_path:
+            filename = os.path.basename(self.attached_image_path)
+            self.attached_image_label.config(text=t("attached_image_label", filename=filename))
+            self.remove_image_button.pack(side="left", padx=(6, 0))
+        else:
+            self.attached_image_label.config(text="")
+            self.remove_image_button.pack_forget()
 
     # ---------- Speaker-selection / intervention panel ----------
 
@@ -1831,6 +1904,12 @@ class ChatTab(ttk.Frame):
         api_key = self.config_data.get("api_key", "")
         full_catalog = build_full_catalog(self.config_data)
         topic = self.topic_text.get("1.0", "end").strip()
+        if self.attached_image_data_url:
+            # The moderator never sees the actual image (only participant
+            # replies get the multi-part image content) — this note lets
+            # it assign visually-relevant tasks anyway, e.g. "describe
+            # what's shown", without literally seeing anything itself.
+            topic += t("topic_image_attached_note")
 
         if not api_key:
             messagebox.showwarning(APP_TITLE, t("set_api_key_first"))
@@ -1893,7 +1972,7 @@ class ChatTab(ttk.Frame):
             target=self._run_worker,
             args=(api_key, full_catalog, topic, max_replies, budget,
                   moderator_mode, moderator_model, user_participation, moderator_summary,
-                  moderator_web_lookup, base_url, reasoning_format),
+                  moderator_web_lookup, base_url, reasoning_format, self.attached_image_data_url),
             daemon=True,
         )
         self.worker_thread.start()
@@ -1922,7 +2001,7 @@ class ChatTab(ttk.Frame):
 
     def _run_worker(self, api_key, full_catalog, topic, max_replies, budget,
                      moderator_mode, moderator_model, user_participation, moderator_summary,
-                     moderator_web_lookup, base_url, reasoning_format):
+                     moderator_web_lookup, base_url, reasoning_format, image_data_url):
         """Runs in the background thread — doesn't block the UI."""
         current_provider = _resolve_provider(self.config_data)
         currency = current_provider.get("currency", "USD")
@@ -2172,6 +2251,7 @@ class ChatTab(ttk.Frame):
                     api_key, model_info["id"], persona, user_prompt,
                     reasoning_max_tokens=reasoning_max_tokens, base_url=base_url,
                     reasoning_format=reasoning_format, reasoning_raw=reasoning_raw,
+                    image_data_url=image_data_url,
                 )
             except OpenRouterError as e:
                 # Not shown in chat — the moderator will just pick someone

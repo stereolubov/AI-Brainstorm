@@ -275,6 +275,21 @@ _BUILTIN_TRANSLATIONS = {
         "cache_updated_at": "обновлено: {timestamp}",
 
         "topic_label": "Тема обсуждения:",
+        "attach_image_button": "📎 Прикрепить изображение",
+        "remove_image_button": "✕",
+        "attached_image_label": "Прикреплено: {filename}",
+        "attach_image_dialog_title": "Выберите изображение",
+        "image_files_filter": "Изображения",
+        "image_read_error": "Не удалось прочитать файл изображения: {error}",
+        "image_large_warning": (
+            "Файл весит {size} МБ — сжатие не выполняется (нужна отдельная "
+            "библиотека обработки изображений, а не только стандартная "
+            "библиотека Python). Большой файл увеличит стоимость каждой "
+            "реплики за сессию. Продолжить?"
+        ),
+        "log_image_attached": "Изображение прикреплено: {filename} ({size} МБ)",
+        "log_image_removed": "Изображение откреплено",
+        "topic_image_attached_note": "\n\n[К теме прикреплено изображение — участники видят его напрямую, ты — нет]",
         "max_replies_label": "Макс. реплик:",
         "start_brainstorm_button": "Начать брейншторм",
         "intervene_button": "Вмешаться",
@@ -657,6 +672,21 @@ _BUILTIN_TRANSLATIONS = {
         "cache_updated_at": "updated: {timestamp}",
 
         "topic_label": "Discussion topic:",
+        "attach_image_button": "📎 Attach image",
+        "remove_image_button": "✕",
+        "attached_image_label": "Attached: {filename}",
+        "attach_image_dialog_title": "Choose an image",
+        "image_files_filter": "Images",
+        "image_read_error": "Couldn't read the image file: {error}",
+        "image_large_warning": (
+            "This file is {size} MB — no compression is applied (that "
+            "needs a dedicated image library, not just Python's standard "
+            "library). A large file will increase the cost of every "
+            "reply for the session. Continue?"
+        ),
+        "log_image_attached": "Image attached: {filename} ({size} MB)",
+        "log_image_removed": "Image removed",
+        "topic_image_attached_note": "\n\n[An image is attached to the topic — participants see it directly, you don't]",
         "max_replies_label": "Max replies:",
         "start_brainstorm_button": "Start Brainstorm",
         "intervene_button": "Intervene",

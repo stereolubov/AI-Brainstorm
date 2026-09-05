@@ -299,6 +299,13 @@ ai_brainstorm/
   session continues — nothing crashes, but that reply is lost). If you
   hit this often, pick a smaller/faster local model or lower its
   reasoning effort.
+- **Not every model can actually see an attached image.** There's no
+  way to check vision support in advance, so a model without it will
+  typically just error out on that reply — same handling as any other
+  model failure: a short cooldown, and the moderator picks someone else
+  instead. Confirmed working live: vision-capable models correctly saw
+  and discussed the image, while the rest quietly dropped out and got
+  replaced, without interrupting the session.
 
 ## Changelog
 
@@ -314,4 +321,6 @@ ai_brainstorm/
   via the new Custom provider.
 - **2026-09-04** — Added support for the Polza.ai provider, for users
   connecting from Russia.
+- **2026-09-05** — Added support for attaching an image to the topic
+  for discussion.
 
