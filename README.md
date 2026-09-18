@@ -239,9 +239,9 @@ regardless of whether the moderator remembered to ask for one.
 
 Two independent stop conditions, whichever hits first:
 
-- **Budget** ($, set in Settings; OpenRouter/Requesty only — the field
-  is hidden entirely for Custom, which essentially never reports a $
-  cost) — includes both participant replies and moderator calls. The
+- **Budget** (in dollars, set in Settings; OpenRouter/Requesty only —
+  the field is hidden entirely for Custom, which essentially never
+  reports a cost) — includes both participant replies and moderator calls. The
   provider returns an exact cost per request; it's shown under each
   reply (in italic gray, right-aligned), split out when a moderator
   call is folded in (e.g. "$0.0031 + moderator $0.0012 = $0.0043").
