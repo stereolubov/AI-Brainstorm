@@ -41,6 +41,7 @@ from api_client import (
 import i18n
 from i18n import t
 import theme
+import ui_widgets
 from providers import PROVIDERS, DEFAULT_PROVIDER, get_provider, provider_ids_in_order, format_money, CURRENCY_SYMBOLS
 
 logger = logging.getLogger("ai_brainstorm")
@@ -55,10 +56,19 @@ class QueueLogHandler(logging.Handler):
     same thread-safe handoff pattern used for chat messages (workers run
     in a background thread, GUI updates happen via after())."""
 
+    # Unit Separator: splits the formatted record into the three columns
+    # the Log tab renders (time | level badge | message). A control
+    # character rather than " [LEVEL] " so a message containing brackets
+    # can't be mistaken for a column boundary.
+    FIELD_SEP = "\x1f"
+
     def __init__(self, ui_queue):
         super().__init__(level=logging.DEBUG)
         self.ui_queue = ui_queue
-        self.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        self.setFormatter(logging.Formatter(
+            f"%(asctime)s.%(msecs)03d{self.FIELD_SEP}%(levelname)s{self.FIELD_SEP}%(message)s",
+            datefmt="%H:%M:%S",
+        ))
 
     def emit(self, record):
         try:
@@ -264,7 +274,9 @@ class ScrollableFrame(ttk.Frame):
         self.vscroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.hscroll = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
 
-        self.inner = ttk.Frame(self.canvas, padding=12)
+        # App.TFrame, not the default: the settings cards are white
+        # panels that need the window color showing between them.
+        self.inner = ttk.Frame(self.canvas, padding=18, style="App.TFrame")
         self._window_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
 
         self.canvas.configure(yscrollcommand=self.vscroll.set, xscrollcommand=self.hscroll.set)
@@ -326,22 +338,21 @@ class LogTab(ttk.Frame):
     """Technical log tab — enabled/disabled via a Settings checkbox."""
 
     def __init__(self, parent):
-        super().__init__(parent, padding=8)
+        super().__init__(parent, style="App.TFrame")
         self.ui_queue = queue.Queue()
 
-        btn_row = ttk.Frame(self)
-        btn_row.pack(fill="x", pady=(0, 6))
+        btn_row = ttk.Frame(self, style="Chrome.TFrame", padding=(18, 10))
+        btn_row.pack(fill="x")
         ttk.Button(btn_row, text=t("copy_all_button"), command=self._copy_all).pack(side="left")
-        ttk.Button(btn_row, text=t("clear_button"), command=self._clear).pack(side="left", padx=(6, 0))
+        ttk.Button(btn_row, text=t("clear_button"), command=self._clear,
+                    style="Ghost.TButton").pack(side="left", padx=(8, 0))
 
-        self.log_text = scrolledtext.ScrolledText(
-            self, wrap="word", state="disabled", font=("Consolas", 9)
-        )
+        self.log_text = scrolledtext.ScrolledText(self, wrap="word", state="disabled")
         self.log_text.pack(fill="both", expand=True)
-        theme.apply_text_widget_theme(self.log_text, get_theme_code())
+        theme.apply_text_widget_theme(self.log_text, get_theme_code(), surface="card")
+        self.log_text.configure(font=theme.font("mono"), padx=18, pady=12, spacing3=3)
         theme.replace_scrollbar_with_ttk(self.log_text)
-        self.log_text.tag_config("ERROR", foreground="#c62828")
-        self.log_text.tag_config("WARNING", foreground="#e65100")
+        self._apply_log_tags()
         self.log_text.bind("<Control-Key>", _make_hotkey_handler({
             "c": lambda e: self._copy_selection(),
             "a": lambda e: self._select_all(),
@@ -368,13 +379,41 @@ class LogTab(ttk.Frame):
         self.log_text.delete("1.0", "end")
         self.log_text.config(state="disabled")
 
+    def retheme(self):
+        """Recolors in place after a theme switch. The Log tab outlives
+        tab rebuilds so its history survives, which means nothing else
+        re-themes it."""
+        theme.apply_text_widget_theme(self.log_text, get_theme_code(), surface="card")
+        self.log_text.configure(font=theme.font("mono"), padx=18, pady=12, spacing3=3)
+        self._apply_log_tags()
+
+    def _apply_log_tags(self):
+        """Per-level colors for the badge column, from the design's log
+        palette. Called again after a theme switch."""
+        code = get_theme_code()
+        palette = theme.get_palette(code)
+        self.log_text.tag_config("time", foreground=palette["faint_fg"])
+        self.log_text.tag_config("msg", foreground=palette["body_fg"])
+        for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            background, foreground = theme.log_badge(code, level)
+            self.log_text.tag_config(f"badge_{level}", background=background,
+                                      foreground=foreground, font=theme.font("mono_micro"))
+
     def _append(self, message, level):
         self.log_text.config(state="normal")
-        tag = level if level in ("ERROR", "WARNING") else None
-        if tag:
-            self.log_text.insert("end", message + "\n", (tag,))
+        # Three columns when the record came through the formatter;
+        # a bare string when formatting failed (see QueueLogHandler.emit),
+        # in which case it's printed as-is rather than mangled.
+        parts = message.split(QueueLogHandler.FIELD_SEP)
+        if len(parts) == 3:
+            timestamp, level_name, body = parts
+            badge = f"badge_{level_name}" if level_name in (
+                "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL") else "badge_DEBUG"
+            self.log_text.insert("end", timestamp + "  ", ("time",))
+            self.log_text.insert("end", f" {level_name:^8} ", (badge,))
+            self.log_text.insert("end", "  " + body + "\n", ("msg",))
         else:
-            self.log_text.insert("end", message + "\n")
+            self.log_text.insert("end", message + "\n", ("msg",))
         self.log_text.config(state="disabled")
         self.log_text.see("end")
 
@@ -437,6 +476,15 @@ class SettingsTab(ttk.Frame):
         self._build_models_block()
         self._build_custom_models_block()
 
+    def _card(self, number, title, subtitle=""):
+        """One numbered panel of the settings page. Returns the Card;
+        build into `.body`, which is what the old ttk.LabelFrame used to
+        be — every child widget below is parented to it unchanged."""
+        card = ui_widgets.Card(self.content, get_theme_code(),
+                                number=number, title=title, subtitle=subtitle)
+        card.pack(fill="x", pady=(0, 14))
+        return card
+
     def _protect_from_wheel(self, widget):
         """Mouse wheel over a Combobox/Spinbox scrolls the page instead
         of silently changing its value — an easy way to accidentally
@@ -461,8 +509,7 @@ class SettingsTab(ttk.Frame):
     # ---------- Profile ----------
 
     def _build_profile_block(self):
-        frame = ttk.LabelFrame(self.content, text=t("profile_block_title"), padding=10)
-        frame.pack(fill="x", pady=(0, 10))
+        frame = self._card("01", t("profile_block_title")).body
 
         row = ttk.Frame(frame)
         row.pack(fill="x")
@@ -480,11 +527,14 @@ class SettingsTab(ttk.Frame):
         ttk.Button(row, text=t("save_as_button"), command=self._save_as_new_profile).pack(
             side="left", padx=(10, 0)
         )
-        ttk.Button(row, text=t("delete_button"), command=self._delete_selected_profile).pack(
+        ttk.Button(row, text=t("delete_button"), command=self._delete_selected_profile,
+                    style="Danger.TButton").pack(
             side="left", padx=(6, 0)
         )
         ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=(12, 12))
-        ttk.Button(row, text=t("save_settings_button"), command=self._save).pack(side="left")
+        # The settings page's one primary action.
+        ttk.Button(row, text=t("save_settings_button"), command=self._save,
+                    style="Accent.TButton").pack(side="left")
 
         second_row = ttk.Frame(frame)
         second_row.pack(fill="x", pady=(6, 0))
@@ -492,7 +542,7 @@ class SettingsTab(ttk.Frame):
             second_row, text=t("open_settings_folder_button"), command=self._open_settings_folder
         ).pack(side="left")
         ttk.Label(
-            second_row, text=f"({CONFIG_DIR})", foreground=theme.get_palette(get_theme_code())["muted_fg"],
+            second_row, text=f"({CONFIG_DIR})", style="Muted.TLabel",
             wraplength=800, justify="left",
         ).pack(side="left", padx=(8, 0))
 
@@ -548,7 +598,7 @@ class SettingsTab(ttk.Frame):
 
         ttk.Label(
             frame, text=t("profile_block_hint"),
-            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
+            style="Muted.TLabel", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(6, 0))
 
     def _on_language_selected(self, _event=None):
@@ -644,8 +694,7 @@ class SettingsTab(ttk.Frame):
     # ---------- API key ----------
 
     def _build_api_key_block(self):
-        frame = ttk.LabelFrame(self.content, text=t("api_key_block_title"), padding=10)
-        frame.pack(fill="x", pady=(0, 10))
+        frame = self._card("02", t("api_key_block_title")).body
 
         provider_row = ttk.Frame(frame)
         provider_row.pack(fill="x", pady=(0, 8))
@@ -679,7 +728,7 @@ class SettingsTab(ttk.Frame):
             self._protect_from_wheel(url_combo)
             ttk.Label(
                 frame, text=t("custom_provider_warning"),
-                foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
+                style="Muted.TLabel", wraplength=1000, justify="left",
             ).pack(anchor="w", pady=(0, 8))
 
         self.api_key_var = tk.StringVar(value=self.config_data.get("api_key", ""))
@@ -708,18 +757,18 @@ class SettingsTab(ttk.Frame):
         ).pack(side="left", padx=(10, 0))
 
         self.balance_label = ttk.Label(
-            frame, text="", foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left"
+            frame, text="", style="Muted.TLabel", wraplength=1000, justify="left"
         )
         self.balance_label.pack(anchor="w", pady=(6, 0))
 
         self.refresh_status_label = ttk.Label(
-            frame, text=self._cache_status_text(), foreground=theme.get_palette(get_theme_code())["muted_fg"],
+            frame, text=self._cache_status_text(), style="Muted.TLabel",
             wraplength=1000, justify="left",
         )
         self.refresh_status_label.pack(anchor="w", pady=(2, 0))
         ttk.Label(
             frame, text=t("refresh_models_hint"),
-            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
+            style="Muted.TLabel", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(4, 0))
 
     def _current_provider(self):
@@ -815,7 +864,7 @@ class SettingsTab(ttk.Frame):
 
                 text = t("key_balance_text", usage=usage_text, limit_text=limit_text)
 
-            self.after(0, lambda: self.balance_label.config(text=text, foreground=theme.get_palette(get_theme_code())["muted_fg"]))
+            self.after(0, lambda: self.balance_label.config(text=text))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -831,8 +880,7 @@ class SettingsTab(ttk.Frame):
             # servers) — the field would just sit there doing nothing.
             return
 
-        frame = ttk.LabelFrame(self.content, text=t("budget_block_title"), padding=10)
-        frame.pack(fill="x", pady=(0, 10))
+        frame = self._card("03", t("budget_block_title")).body
 
         currency_symbol = CURRENCY_SYMBOLS.get(self._current_provider().get("currency", "USD"), "$")
         ttk.Label(frame, text=t("session_budget_label", currency=currency_symbol)).pack(side="left")
@@ -841,15 +889,14 @@ class SettingsTab(ttk.Frame):
         )
         ttk.Label(
             frame, text=t("session_budget_hint"),
-            foreground=theme.get_palette(get_theme_code())["muted_fg"],
+            style="Muted.TLabel",
             wraplength=420,
         ).pack(side="left", padx=(10, 0))
 
     # ---------- Moderator and participation ----------
 
     def _build_moderator_block(self):
-        frame = ttk.LabelFrame(self.content, text=t("moderator_block_title"), padding=10)
-        frame.pack(fill="x", pady=(0, 10))
+        frame = self._card("04", t("moderator_block_title")).body
 
         self.moderator_mode_var = tk.StringVar(
             value=self.config_data.get("moderator_mode", "ai")
@@ -918,7 +965,7 @@ class SettingsTab(ttk.Frame):
 
         ttk.Label(
             frame, text=t("moderator_block_hint"),
-            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
+            style="Muted.TLabel", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(8, 0))
 
         # Applies both the mode-dependent (AI/Human) and free-only-dependent
@@ -985,12 +1032,7 @@ class SettingsTab(ttk.Frame):
         return t("cache_never_updated") if not ts else t("cache_updated_at", timestamp=ts)
 
     def _build_models_block(self):
-        frame = ttk.LabelFrame(
-            self.content,
-            text=t("standard_models_title", max=MAX_STANDARD_MODELS),
-            padding=10,
-        )
-        frame.pack(fill="both", expand=True, pady=(0, 10))
+        frame = self._card("05", t("standard_models_title", max=MAX_STANDARD_MODELS)).body
 
         if self._current_provider().get("uses_families", True):
             ttk.Checkbutton(
@@ -1005,14 +1047,14 @@ class SettingsTab(ttk.Frame):
             )
             ttk.Label(
                 frame, text=t(note_key),
-                foreground=theme.get_palette(get_theme_code())["muted_fg"],
+                style="Muted.TLabel",
                 wraplength=1000, justify="left",
             ).pack(anchor="w")
             return
 
         ttk.Label(
             frame, text=t("reasoning_intro_hint"),
-            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
+            style="Muted.TLabel", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(0, 2))
         reasoning_docs_url = self._current_provider().get("reasoning_docs_url")
         if reasoning_docs_url:
@@ -1021,7 +1063,7 @@ class SettingsTab(ttk.Frame):
             )
         ttk.Label(
             frame, text=t("reasoning_budget_hint"),
-            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
+            style="Muted.TLabel", wraplength=1000, justify="left",
         ).pack(anchor="w", pady=(0, 10))
 
         selected = set(self.config_data.get("selected_families", []))
@@ -1211,15 +1253,12 @@ class SettingsTab(ttk.Frame):
 
     def _build_custom_models_block(self):
         title_key = "custom_models_title" if self.use_families_var.get() else "flat_models_title"
-        frame = ttk.LabelFrame(
-            self.content, text=t(title_key, max=self.custom_slot_count), padding=10
-        )
-        frame.pack(fill="both", expand=True, pady=(0, 10))
+        frame = self._card("06", t(title_key, max=self.custom_slot_count)).body
 
         provider = self._current_provider()
         info = ttk.Label(
             frame, text=t("custom_models_info", provider=provider["name"]),
-            foreground=theme.get_palette(get_theme_code())["muted_fg"], wraplength=1000, justify="left",
+            style="Muted.TLabel", wraplength=1000, justify="left",
         )
         info.pack(anchor="w", pady=(0, 2))
         models_docs_url = provider.get("models_docs_url")
@@ -1461,7 +1500,9 @@ class ChatTab(ttk.Frame):
     """Brainstorm tab: topic, moderator, discussion log, intervention."""
 
     def __init__(self, parent, config, save_settings_callback=None):
-        super().__init__(parent, padding=12)
+        # No padding: the header panel and the transcript both run edge
+        # to edge, and each brings its own internal padding.
+        super().__init__(parent, style="App.TFrame")
         self.config_data = config
         self.save_settings_callback = save_settings_callback
         self.ui_queue = queue.Queue()
@@ -1489,12 +1530,21 @@ class ChatTab(ttk.Frame):
     # ---------- Top control bar ----------
 
     def _build_controls(self):
-        topic_frame = ttk.Frame(self)
-        topic_frame.pack(fill="x", pady=(0, 6))
-        ttk.Label(topic_frame, text=t("topic_label")).pack(anchor="w")
+        # Everything above the transcript sits on one chrome-colored
+        # panel, as in the design, instead of floating on the window
+        # background — it's what separates "compose" from "read".
+        self.header = ttk.Frame(self, style="Chrome.TFrame", padding=(18, 14))
+        self.header.pack(fill="x")
+
+        topic_frame = ttk.Frame(self.header, style="Chrome.TFrame")
+        topic_frame.pack(fill="x", pady=(0, 10))
+        # Uppercased eyebrow label, as in the design. The translation
+        # carries a trailing colon for its old inline use — drop it.
+        ttk.Label(topic_frame, text=t("topic_label").rstrip(":").upper(),
+                   style="FieldLabelOnChrome.TLabel").pack(anchor="w", pady=(0, 6))
         self.topic_text = tk.Text(topic_frame, height=3, wrap="word")
-        self.topic_text.pack(fill="x", pady=(2, 0))
-        theme.apply_text_widget_theme(self.topic_text, get_theme_code())
+        self.topic_text.pack(fill="x")
+        theme.apply_text_widget_theme(self.topic_text, get_theme_code(), outline=True)
         self.topic_text.bind("<Control-Key>", _make_hotkey_handler({
             "c": lambda e: self._clipboard_op(self.topic_text, "<<Copy>>"),
             "v": lambda e: self._clipboard_op(self.topic_text, "<<Paste>>"),
@@ -1503,54 +1553,57 @@ class ChatTab(ttk.Frame):
         }))
         self.topic_text.bind("<Button-1>", lambda e: self.topic_text.focus_set())
 
-        image_row = ttk.Frame(topic_frame)
-        image_row.pack(fill="x", pady=(4, 0))
+        image_row = ttk.Frame(topic_frame, style="Chrome.TFrame")
+        image_row.pack(fill="x", pady=(8, 0))
         ttk.Button(
-            image_row, text=t("attach_image_button"), command=self._attach_image_clicked
+            image_row, text=t("attach_image_button"), command=self._attach_image_clicked,
+            style="Ghost.TButton",
         ).pack(side="left")
-        self.attached_image_label = ttk.Label(
-            image_row, text="", foreground=theme.get_palette(get_theme_code())["muted_fg"]
-        )
+        self.attached_image_label = ttk.Label(image_row, text="", style="MutedOnChrome.TLabel")
         self.attached_image_label.pack(side="left", padx=(8, 0))
         self.remove_image_button = ttk.Button(
             image_row, text=t("remove_image_button"), command=self._remove_image_clicked, width=3,
+            style="Ghost.TButton",
         )
         # Not packed until something is actually attached — see
         # _update_image_attachment_display().
 
-        settings_row = ttk.Frame(self)
-        settings_row.pack(fill="x", pady=(0, 6))
+        settings_row = ttk.Frame(self.header, style="Chrome.TFrame")
+        settings_row.pack(fill="x")
 
-        ttk.Label(settings_row, text=t("max_replies_label")).pack(side="left")
+        ttk.Label(settings_row, text=t("max_replies_label"),
+                   style="FieldLabelOnChrome.TLabel").pack(side="left", padx=(0, 6))
         self.max_replies_var = tk.IntVar(value=self.config_data.get("max_replies", 12))
         ttk.Spinbox(
             settings_row, from_=2, to=40, textvariable=self.max_replies_var, width=4
-        ).pack(side="left", padx=(4, 16))
+        ).pack(side="left", padx=(0, 14))
 
+        # One accent button per screen — this is the chat's.
         self.start_button = ttk.Button(
-            settings_row, text=t("start_brainstorm_button"), command=self._start_brainstorm
+            settings_row, text=t("start_brainstorm_button"), command=self._start_brainstorm,
+            style="Accent.TButton",
         )
         self.start_button.pack(side="left")
 
         self.intervene_button = ttk.Button(
             settings_row, text=t("intervene_button"), command=self._intervene_clicked, state="disabled"
         )
-        self.intervene_button.pack(side="left", padx=(6, 0))
+        self.intervene_button.pack(side="left", padx=(8, 0))
 
-        ttk.Button(settings_row, text=t("export_button"), command=self._export_clicked).pack(
-            side="left", padx=(6, 0)
-        )
-        ttk.Button(settings_row, text=t("copy_all_button"), command=self._copy_all_clicked).pack(
-            side="left", padx=(6, 0)
-        )
+        ttk.Button(settings_row, text=t("export_button"), command=self._export_clicked,
+                    style="Ghost.TButton").pack(side="left", padx=(8, 0))
+        ttk.Button(settings_row, text=t("copy_all_button"), command=self._copy_all_clicked,
+                    style="Ghost.TButton").pack(side="left", padx=(8, 0))
 
-        status_row = ttk.Frame(self)
-        status_row.pack(fill="x")
+        status_row = ttk.Frame(self.header, style="Chrome.TFrame")
+        status_row.pack(fill="x", pady=(10, 0))
         self.status_var = tk.StringVar(value="")
-        ttk.Label(status_row, textvariable=self.status_var, foreground=theme.get_palette(get_theme_code())["muted_fg"]).pack(side="left")
+        ttk.Label(status_row, textvariable=self.status_var,
+                   style="MutedOnChrome.TLabel").pack(side="left")
         self.cost_var = tk.StringVar(value="")
         if _resolve_provider(self.config_data).get("has_cost_tracking", True):
-            ttk.Label(status_row, textvariable=self.cost_var, foreground="#2e7d32").pack(side="right")
+            ttk.Label(status_row, textvariable=self.cost_var,
+                       style="SuccessOnChrome.TLabel").pack(side="right")
 
     # ---------- Image attachment ----------
 
@@ -1604,7 +1657,7 @@ class ChatTab(ttk.Frame):
     # ---------- Speaker-selection / intervention panel ----------
 
     def _build_input_panel(self):
-        self.input_panel = ttk.Frame(self, padding=8, relief="ridge")
+        self.input_panel = ttk.Frame(self, style="Chrome.TFrame", padding=(18, 12))
         # Not packed yet — shown only when user input is actually needed.
 
     def _show_input_panel(self, mode, payload=None):
@@ -1617,21 +1670,19 @@ class ChatTab(ttk.Frame):
                 if payload.get("is_final_reply")
                 else t("your_turn_choose_speaker")
             )
-            ttk.Label(self.input_panel, text=label_text).pack(anchor="w")
+            ttk.Label(self.input_panel, text=label_text, style="OnChrome.TLabel").pack(anchor="w")
 
             comment_entry = tk.Text(self.input_panel, height=2, wrap="word")
             comment_entry.pack(fill="x", pady=(4, 4))
-            theme.apply_text_widget_theme(comment_entry, get_theme_code())
-            ttk.Label(
-                self.input_panel, text=t("optional_comment_hint"),
-                foreground=theme.get_palette(get_theme_code())["muted_fg"],
-            ).pack(anchor="w")
+            theme.apply_text_widget_theme(comment_entry, get_theme_code(), outline=True)
+            ttk.Label(self.input_panel, text=t("optional_comment_hint"),
+                       style="MutedOnChrome.TLabel").pack(anchor="w")
 
             def choose(pid):
                 comment = comment_entry.get("1.0", "end").strip()
                 self._resolve_pending({"next": pid, "comment": comment})
 
-            btn_row = ttk.Frame(self.input_panel)
+            btn_row = ttk.Frame(self.input_panel, style="Chrome.TFrame")
             btn_row.pack(fill="x", pady=(6, 0))
             for participant in payload["participants"]:
                 ttk.Button(
@@ -1643,19 +1694,19 @@ class ChatTab(ttk.Frame):
                     btn_row, text=t("speak_myself_button"), command=lambda: choose("user")
                 ).pack(side="left", padx=4, pady=2)
             ttk.Button(
-                btn_row, text=t("end_discussion_button"),
+                btn_row, text=t("end_discussion_button"), style="Danger.TButton",
                 command=lambda: self._resolve_pending({"end": True}),
             ).pack(side="right", padx=4, pady=2)
 
         elif mode == "user_turn":
-            ttk.Label(self.input_panel, text=t("moderator_passed_you_the_floor")).pack(anchor="w")
+            ttk.Label(self.input_panel, text=t("moderator_passed_you_the_floor"), style="OnChrome.TLabel").pack(anchor="w")
             entry = tk.Text(self.input_panel, height=3, wrap="word")
             entry.pack(fill="x", pady=4)
-            theme.apply_text_widget_theme(entry, get_theme_code())
-            btn_row = ttk.Frame(self.input_panel)
+            theme.apply_text_widget_theme(entry, get_theme_code(), outline=True)
+            btn_row = ttk.Frame(self.input_panel, style="Chrome.TFrame")
             btn_row.pack(fill="x")
             ttk.Button(
-                btn_row, text=t("send_button"),
+                btn_row, text=t("send_button"), style="Accent.TButton",
                 command=lambda: self._resolve_pending(entry.get("1.0", "end").strip() or None),
             ).pack(side="left", padx=4)
             ttk.Button(
@@ -1664,25 +1715,25 @@ class ChatTab(ttk.Frame):
             entry.focus_set()
 
         elif mode == "intervene":
-            ttk.Label(self.input_panel, text=t("intervene_hint")).pack(anchor="w")
+            ttk.Label(self.input_panel, text=t("intervene_hint"), style="OnChrome.TLabel").pack(anchor="w")
             entry = tk.Text(self.input_panel, height=3, wrap="word")
             entry.pack(fill="x", pady=4)
-            theme.apply_text_widget_theme(entry, get_theme_code())
-            btn_row = ttk.Frame(self.input_panel)
+            theme.apply_text_widget_theme(entry, get_theme_code(), outline=True)
+            btn_row = ttk.Frame(self.input_panel, style="Chrome.TFrame")
             btn_row.pack(fill="x")
             ttk.Button(
-                btn_row, text=t("continue_with_note_button"),
+                btn_row, text=t("continue_with_note_button"), style="Accent.TButton",
                 command=lambda: self._resolve_pending(
                     {"action": "continue", "text": entry.get("1.0", "end").strip()}
                 ),
             ).pack(side="left", padx=4)
             ttk.Button(
-                btn_row, text=t("end_session_button"),
+                btn_row, text=t("end_session_button"), style="Danger.TButton",
                 command=lambda: self._resolve_pending({"action": "end"}),
             ).pack(side="left", padx=4)
             entry.focus_set()
 
-        self.input_panel.pack(fill="x", pady=(0, 8), before=self.chat_log)
+        self.input_panel.pack(fill="x", pady=(0, 8), before=self.messages)
 
     def _hide_input_panel(self):
         self.input_panel.pack_forget()
@@ -1707,40 +1758,44 @@ class ChatTab(ttk.Frame):
 
     # ---------- Chat log ----------
 
+    # Non-participant speakers. Participants get their own color from the
+    # catalog (see _ensure_model_tags); these are the fixed roles, and
+    # their colors come from the reference design rather than from the
+    # theme, the same way the participant brand colors do.
+    ROLE_COLORS = {
+        "system": None,            # resolved from the palette — this one IS chrome
+        "error": "#c62828",
+        "user_note": "#7C8CF8",
+        "summary": "#2e7d32",
+        "web_lookup": "#0e7490",
+    }
+
     def _build_chat_log(self):
-        self.chat_log = scrolledtext.ScrolledText(
-            self, wrap="word", state="disabled", font=("Segoe UI", 10)
+        self.messages = ui_widgets.MessageList(self, get_theme_code())
+        self.messages.pack(fill="both", expand=True)
+
+        # participant_id -> (color, short model name), filled per session
+        # by _ensure_model_tags once the catalog is known.
+        self._speaker_colors = {}
+        self._speaker_versions = {}
+
+    def _speaker_style(self, tag):
+        """Color and model-id caption for one message, by its tag."""
+        if tag in self._speaker_colors:
+            return self._speaker_colors[tag], self._speaker_versions.get(tag, "")
+        if tag == "system":
+            return theme.get_palette(get_theme_code())["muted_fg"], ""
+        return self.ROLE_COLORS.get(tag) or theme.get_palette(get_theme_code())["muted_fg"], ""
+
+    def _configure_body_tags(self, widget):
+        """The inline-markdown tags, applied to one message's body."""
+        colors = theme.theme_tag_colors(get_theme_code())
+        widget.tag_config("bold", font=theme.font("body_bold"))
+        widget.tag_config(
+            "code", font=theme.font("code"), background=colors["code_bg"],
+            foreground=colors["code_fg"], lmargin1=10, lmargin2=10,
+            spacing1=5, spacing3=5,
         )
-        self.chat_log.pack(fill="both", expand=True)
-        theme.apply_text_widget_theme(self.chat_log, get_theme_code())
-        theme.replace_scrollbar_with_ttk(self.chat_log)
-
-        tag_colors = theme.theme_tag_colors(get_theme_code())
-        self.chat_log.tag_config("system", foreground=tag_colors["muted_fg"])
-        self.chat_log.tag_config("error", foreground="#c62828")
-        self.chat_log.tag_config("user_note", foreground="#1565c0", font=("Segoe UI", 10, "bold"))
-        self.chat_log.tag_config("summary", foreground="#2e7d32", font=("Segoe UI", 10, "bold"))
-        self.chat_log.tag_config("web_lookup", foreground="#0e7490", font=("Segoe UI", 10, "bold"))
-        self.chat_log.tag_config("separator", foreground=tag_colors["separator"])
-        self.chat_log.tag_config("code", font=("Consolas", 9), background=tag_colors["code_bg"])
-        self.chat_log.tag_config("bold", font=("Segoe UI", 10, "bold"))
-        self.chat_log.tag_config(
-            "cost_line", foreground=tag_colors["muted_fg"], font=("Segoe UI", 9, "italic"), justify="right"
-        )
-
-        self.chat_log.bind("<Control-Key>", _make_hotkey_handler({
-            "c": lambda e: self._copy_selection(),
-            "a": lambda e: self._select_all_log(),
-        }))
-        self.chat_log.bind("<Button-1>", lambda e: self.chat_log.focus_set())
-
-    def _copy_selection(self, _event=None):
-        self.chat_log.event_generate("<<Copy>>")
-        return "break"
-
-    def _select_all_log(self, _event=None):
-        self.chat_log.tag_add("sel", "1.0", "end")
-        return "break"
 
     @staticmethod
     def _clipboard_op(widget, virtual_event):
@@ -1754,12 +1809,15 @@ class ChatTab(ttk.Frame):
         return "break"
 
     def _ensure_model_tags(self, full_catalog):
+        """Caches each participant's color and short model id for the
+        message headers. Called once per session, when the catalog is
+        resolved."""
         for model in full_catalog:
-            self.chat_log.tag_config(
-                model["participant_id"], foreground=model["color"], font=("Segoe UI", 10, "bold")
-            )
+            participant_id = model["participant_id"]
+            self._speaker_colors[participant_id] = model["color"]
+            self._speaker_versions[participant_id] = short_model_name(model["id"])
 
-    def _insert_inline_formatted(self, text):
+    def _insert_inline_formatted(self, widget, text):
         """Handles **bold**, `inline code`, headers (# ...) and bullet
         lists (- ...) inside plain (non-fenced) text."""
         lines = text.split("\n")
@@ -1767,7 +1825,7 @@ class ChatTab(ttk.Frame):
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 content = stripped.lstrip("#").strip()
-                self.chat_log.insert("end", content, ("bold",))
+                widget.insert("end", content, ("bold",))
             else:
                 display_line = line
                 if stripped.startswith(("- ", "* ")):
@@ -1776,18 +1834,18 @@ class ChatTab(ttk.Frame):
                 last = 0
                 for m in MD_INLINE_RE.finditer(display_line):
                     if m.start() > last:
-                        self.chat_log.insert("end", display_line[last:m.start()])
+                        widget.insert("end", display_line[last:m.start()])
                     if m.group(1) is not None:
-                        self.chat_log.insert("end", m.group(1), ("bold",))
+                        widget.insert("end", m.group(1), ("bold",))
                     else:
-                        self.chat_log.insert("end", m.group(2), ("code",))
+                        widget.insert("end", m.group(2), ("code",))
                     last = m.end()
                 if last < len(display_line):
-                    self.chat_log.insert("end", display_line[last:])
+                    widget.insert("end", display_line[last:])
             if i < len(lines) - 1:
-                self.chat_log.insert("end", "\n")
+                widget.insert("end", "\n")
 
-    def _insert_body_with_code(self, text):
+    def _insert_body_with_code(self, widget, text):
         """Renders a reply: ```code blocks``` in monospace with a
         background, everything else with basic Markdown formatting
         (useful when the topic involves code or structured replies)."""
@@ -1795,29 +1853,32 @@ class ChatTab(ttk.Frame):
         for match in CODE_FENCE_RE.finditer(text):
             before = text[pos:match.start()]
             if before:
-                self._insert_inline_formatted(before)
+                self._insert_inline_formatted(widget, before)
             code = match.group(1)
-            self.chat_log.insert("end", code, ("code",))
+            widget.insert("end", code, ("code",))
             pos = match.end()
         rest = text[pos:]
         if rest:
-            self._insert_inline_formatted(rest)
+            self._insert_inline_formatted(widget, rest)
 
     def _append_log(self, speaker_label, tag, text):
         self.export_log.append((speaker_label, tag, text.replace(_COST_MARKER, "\n\n")))
 
         body, _sep, cost_line = text.partition(_COST_MARKER)
+        color, version = self._speaker_style(tag)
 
-        self.chat_log.config(state="normal")
-        self.chat_log.insert("end", f"{speaker_label}\n", (tag,))
-        self._insert_body_with_code(body)
-        self.chat_log.insert("end", "\n")
-        if cost_line:
-            self.chat_log.insert("end", cost_line + "\n", ("cost_line",))
-        self.chat_log.insert("end", "\n")
-        self.chat_log.insert("end", "─" * 70 + "\n\n", ("separator",))
-        self.chat_log.config(state="disabled")
-        self.chat_log.see("end")
+        def render(widget):
+            self._configure_body_tags(widget)
+            self._insert_body_with_code(widget, body.strip())
+
+        self.messages.add_message(
+            speaker_label, color, version=version, cost=cost_line,
+            # The user's own turns — the topic and any intervention — get
+            # the tinted background, as in the design.
+            is_user=(tag == "user_note"),
+            render=render,
+        )
+        self.messages.see_end()
 
     # ---------- Export / copy ----------
 
@@ -1876,9 +1937,12 @@ class ChatTab(ttk.Frame):
         self.status_var.set(t("exported_to", path=path))
 
     def _copy_all_clicked(self):
-        content = self.chat_log.get("1.0", "end").strip()
+        # Built from the raw transcript, not scraped out of the widgets:
+        # the messages are separate Text widgets now, and this already
+        # produced better output than the rendered version anyway (the
+        # widget strips the markdown it renders).
         self.clipboard_clear()
-        self.clipboard_append(content)
+        self.clipboard_append(self._build_plain_export().strip())
         self.status_var.set(t("log_copied_to_clipboard"))
 
     # ---------- Start/stop session ----------
@@ -1924,9 +1988,7 @@ class ChatTab(ttk.Frame):
             messagebox.showwarning(APP_TITLE, t("enter_topic_warning"))
             return
 
-        self.chat_log.config(state="normal")
-        self.chat_log.delete("1.0", "end")
-        self.chat_log.config(state="disabled")
+        self.messages.clear()
         self.export_log.clear()
         self._hide_input_panel()
         self._append_log(t("user_topic_label"), "user_note", topic)
@@ -2429,13 +2491,18 @@ class App(tk.Tk):
 
         self.config_data = load_config()
 
-        self.notebook = ttk.Notebook(self)
+        # A custom tab strip rather than ttk.Notebook: the design's tabs
+        # carry a 2px underline indicator and a status chip pinned to the
+        # right of the strip, neither of which a Notebook tab can hold.
+        # The API is the same (add/forget/select/tabs), but pages must be
+        # parented to .content — Tk can't reparent a built widget.
+        self.notebook = ui_widgets.TabView(self, get_theme_code())
         self.notebook.pack(fill="both", expand=True)
 
         # The "Log" tab is created once and lives for the whole app
         # session (just shown/hidden via notebook.add/forget) — so
         # accumulated log history isn't lost when toggling visibility.
-        self.log_tab = LogTab(self.notebook)
+        self.log_tab = LogTab(self.notebook.content)
         self._log_handler = QueueLogHandler(self.log_tab.ui_queue)
         logger.addHandler(self._log_handler)
 
@@ -2446,11 +2513,11 @@ class App(tk.Tk):
 
     def _build_tabs(self):
         self.chat_tab = ChatTab(
-            self.notebook, self.config_data,
+            self.notebook.content, self.config_data,
             save_settings_callback=lambda: self.settings_tab._save(),
         )
         self.settings_tab = SettingsTab(
-            self.notebook, self.config_data,
+            self.notebook.content, self.config_data,
             on_saved=self._on_settings_saved,
             on_profile_switched=self._on_profile_switched,
         )
@@ -2459,6 +2526,7 @@ class App(tk.Tk):
         self.notebook.add(self.chat_tab, text=t("tab_chat"))
 
         self._apply_debug_visibility()
+        self._refresh_tab_status()
 
         if not self.config_data.get("api_key"):
             self.notebook.select(self.settings_tab)
@@ -2471,11 +2539,27 @@ class App(tk.Tk):
         elif not enabled and is_shown:
             self.notebook.forget(self.log_tab)
 
+    def _refresh_tab_status(self):
+        """Fills the chip to the right of the tab strip. The design shows
+        a live balance there; that would cost a network round trip on
+        every settings save, so this shows what's already known for
+        free — the active provider and profile."""
+        provider = _resolve_provider(self.config_data)
+        palette = theme.get_palette(get_theme_code())
+        parts = [provider["name"]]
+        profile = get_active_profile_name()
+        if profile:
+            parts.append(profile)
+        self.notebook.set_status(" · ".join(parts),
+                                  dot_color=palette["success"] if self.config_data.get("api_key")
+                                  else palette["faint_fg"])
+
     def _on_settings_saved(self):
         # Settings live in the shared self.config_data dict, already used
         # by the chat tab — nothing else to sync. The "Log" tab's
         # visibility may have changed, though — apply that.
         self._apply_debug_visibility()
+        self._refresh_tab_status()
 
     def _on_profile_switched(self):
         """Called by SettingsTab after loading/deleting a profile, or
@@ -2494,11 +2578,20 @@ class App(tk.Tk):
         # LogTab is a singleton (kept alive across rebuilds to preserve
         # its history), so it isn't recreated above — its plain tk.Text
         # widget needs an explicit recolor if the theme just changed.
-        theme.apply_text_widget_theme(self.log_tab.log_text, get_theme_code())
+        self.log_tab.retheme()
+
+        # Same reason the tab strip is recolored instead of rebuilt:
+        # destroying it would take the Log tab (and its history) with it.
+        self.notebook.retheme(get_theme_code())
 
         self._build_tabs()
 
 
 if __name__ == "__main__":
+    # Before tk.Tk(): Tk reads the available font families when the
+    # interpreter starts, so a font registered afterwards stays
+    # invisible to it. Silent no-op if the .ttf files aren't there.
+    theme.register_bundled_fonts()
+
     app = App()
     app.mainloop()
