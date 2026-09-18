@@ -2062,6 +2062,34 @@ class ChatTab(ttk.Frame):
             value = info.get("usage")
         return value if isinstance(value, (int, float)) else None
 
+    def _get_settled_spend_snapshot(self, api_key, provider, baseline,
+                                     attempts=4, delay_seconds=1.5):
+        """Like _get_spend_snapshot, but gives the provider's accounting a
+        moment to catch up first.
+
+        A generation's cost is posted to the key's running total
+        asynchronously — OpenRouter's /key "usage" is a cumulative figure
+        updated after the fact, not at the instant the response returns.
+        Reading it the moment the last reply lands therefore returns the
+        SAME number the session started with, which is how the
+        reconciliation line came to report a real charge of $0.0000 on
+        every paid session: not a wrong number, an unchanged one.
+
+        Re-reads until the figure moves, or until the attempts run out —
+        in which case the caller says the charge hasn't been reported
+        rather than presenting a stale zero as fact. Runs on the worker
+        thread, so the sleeps don't block the UI.
+        """
+        snapshot = self._get_spend_snapshot(api_key, provider)
+        if baseline is None:
+            return snapshot
+        for _ in range(max(0, attempts - 1)):
+            if snapshot is not None and snapshot != baseline:
+                return snapshot
+            time.sleep(delay_seconds)
+            snapshot = self._get_spend_snapshot(api_key, provider)
+        return snapshot
+
     def _run_worker(self, api_key, full_catalog, topic, max_replies, budget,
                      moderator_mode, moderator_model, user_participation, moderator_summary,
                      moderator_web_lookup, base_url, reasoning_format, image_data_url):
@@ -2385,7 +2413,14 @@ class ChatTab(ttk.Frame):
         # that errored/timed out on our end but were still processed
         # and billed on theirs). Silently skipped if either snapshot
         # failed or wasn't available.
-        end_spend_snapshot = self._get_spend_snapshot(api_key, current_provider)
+        if start_spend_snapshot is not None and total_cost > 0:
+            self.ui_queue.put(("status", t("reconciling_status"), None, None))
+            end_spend_snapshot = self._get_settled_spend_snapshot(
+                api_key, current_provider, start_spend_snapshot
+            )
+        else:
+            end_spend_snapshot = self._get_spend_snapshot(api_key, current_provider)
+
         if start_spend_snapshot is not None and end_spend_snapshot is not None:
             key_info_format = current_provider.get("key_info_format", "openrouter")
             if key_info_format == "polza":
@@ -2394,10 +2429,23 @@ class ChatTab(ttk.Frame):
             else:
                 # OpenRouter-style cumulative usage — spending INCREASES it.
                 actual_spent = end_spend_snapshot - start_spend_snapshot
-            finish_reason += t(
-                "cost_reconciliation_note",
-                tracked=format_money(total_cost, currency), actual=format_money(actual_spent, currency),
-            )
+
+            # A non-positive difference after we know money was spent means
+            # the provider simply hasn't posted the charge yet. Printing it
+            # as "actually charged: $0.0000" states, falsely, that the
+            # session was free — worse than admitting there's nothing to
+            # compare against.
+            if actual_spent > 0:
+                finish_reason += t(
+                    "cost_reconciliation_note",
+                    tracked=format_money(total_cost, currency),
+                    actual=format_money(actual_spent, currency),
+                )
+            elif total_cost > 0:
+                finish_reason += t(
+                    "cost_reconciliation_pending",
+                    tracked=format_money(total_cost, currency),
+                )
 
         logger.info(t("log_session_finished", reason=finish_reason, total=format_money(total_cost, currency)))
         self.ui_queue.put(("finished", finish_reason, None, None))

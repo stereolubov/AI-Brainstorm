@@ -376,6 +376,8 @@ _BUILTIN_TRANSLATIONS = {
             "реальный расход мог быть чуть выше)"
         ),
         "cost_reconciliation_note": " Отслежено нами: {tracked}, реально списано: {actual}.",
+        "cost_reconciliation_pending": " Отслежено нами: {tracked}. Провайдер ещё не отразил списание в балансе ключа — сверить не с чем.",
+        "reconciling_status": "Сверяем расходы с провайдером…",
         "log_session_finished": "Сессия завершена: {reason} Всего потрачено: {total}",
 
         "tab_settings": "Настройки",
@@ -773,6 +775,8 @@ _BUILTIN_TRANSLATIONS = {
             "cost — actual spend may have been a bit higher)"
         ),
         "cost_reconciliation_note": " Tracked by us: {tracked}, actually charged: {actual}.",
+        "cost_reconciliation_pending": " Tracked by us: {tracked}. The provider has not posted the charge to the key's balance yet — nothing to reconcile against.",
+        "reconciling_status": "Reconciling spend with the provider…",
         "log_session_finished": "Session finished: {reason} Total spent: {total}",
 
         "tab_settings": "Settings",
