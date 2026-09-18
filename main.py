@@ -1879,6 +1879,7 @@ class ChatTab(ttk.Frame):
             render=render,
         )
         self.messages.see_end()
+        self.messages.settle()
 
     # ---------- Export / copy ----------
 

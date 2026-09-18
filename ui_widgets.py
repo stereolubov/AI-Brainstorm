@@ -21,6 +21,7 @@ and is rebuilt (not re-colored) on a theme switch, matching how the rest
 of the app already handles that — see App._on_profile_switched.
 """
 
+import math
 import tkinter as tk
 from tkinter import ttk
 
@@ -288,6 +289,9 @@ class MessageList(ttk.Frame):
         self.canvas.bind("<Leave>", lambda _e: self.canvas.unbind_all("<MouseWheel>"))
 
         self._bodies = []        # every message body, for theme-wide font/tag work
+        self._fitters = []       # one _AutoHeight per body; see settle()
+        self._settle_pending = False
+        self._verified_upto = 0
         self._autoscroll = True
 
     # ---- scrolling plumbing ----
@@ -299,6 +303,10 @@ class MessageList(ttk.Frame):
 
     def _on_canvas_configure(self, event):
         self.canvas.itemconfigure(self._window, width=event.width)
+        # Width changed, so every message re-wraps. Heights are corrected
+        # arithmetically by each _AutoHeight; this audits the result once
+        # for the whole list rather than once per message.
+        self.settle(full=True)
 
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -309,16 +317,58 @@ class MessageList(ttk.Frame):
         return "break"
 
     def see_end(self):
+        """Re-arms auto-scroll; the move itself happens in
+        _on_inner_configure once the new message has been laid out.
+
+        Forcing a layout here instead would relayout the entire
+        transcript on every single append — and, because it also flushes
+        the pending settle(), audit every earlier message again. That is
+        what made a 30-reply session take seconds instead of milliseconds.
+        """
         self._autoscroll = True
-        self.canvas.update_idletasks()
-        self.canvas.yview_moveto(1.0)
 
     # ---- content ----
+
+    def settle(self, full=False):
+        """Checks, once per idle cycle, that no message is cut off.
+
+        Height is computed arithmetically as each message is added, which
+        costs no layout pass. This is the audit — batched, so a burst of
+        replies pays for one relayout rather than one each.
+
+        Only messages added since the last audit are re-checked, which is
+        what keeps appending a reply independent of how long the
+        transcript already is. `full=True` re-checks everything, for when
+        the width changed and every message has re-wrapped.
+        """
+        if full:
+            self._verified_upto = 0
+        if self._settle_pending:
+            return
+        self._settle_pending = True
+
+        def run():
+            self._settle_pending = False
+            try:
+                self.update_idletasks()
+            except tk.TclError:
+                return
+            start = self._verified_upto
+            for fitter in self._fitters[start:]:
+                fitter.verify()
+            self._verified_upto = len(self._fitters)
+
+        try:
+            self.after_idle(run)
+        except tk.TclError:
+            self._settle_pending = False
 
     def clear(self):
         for child in self.inner.winfo_children():
             child.destroy()
         self._bodies.clear()
+        self._fitters.clear()
+        self._verified_upto = 0
         self._autoscroll = True
 
     def add_message(self, name, color, version="", cost="", is_user=False, render=None):
@@ -364,6 +414,12 @@ class MessageList(ttk.Frame):
             padx=0, pady=0, cursor="xterm", spacing1=0, spacing3=3,
         )
         body.pack(fill="x", pady=(7, 0))
+        # A Text answers the wheel by scrolling itself, which inside a
+        # message means the reply silently scrolls away from its own
+        # header. Hand the event to the transcript instead.
+        body.bind("<MouseWheel>", self._on_mousewheel)
+        body.bind("<Button-4>", lambda _e: (self.canvas.yview_scroll(-1, "units"), "break")[1])
+        body.bind("<Button-5>", lambda _e: (self.canvas.yview_scroll(1, "units"), "break")[1])
         if render is not None:
             render(body)
             # Markdown rendering leaves trailing blank lines behind (a
@@ -373,7 +429,7 @@ class MessageList(ttk.Frame):
             while body.index("end-1c") != "1.0" and body.get("end-2c", "end-1c") in ("\n", " ", "\t"):
                 body.delete("end-2c")
         body.configure(state="disabled")
-        _AutoHeight(body)
+        self._fitters.append(_AutoHeight(body))
         self._bodies.append(body)
 
         if cost:
@@ -394,9 +450,23 @@ class _AutoHeight:
     height wrong in both directions — a reply ending after a code block
     loses its last paragraph, while a plain one gains dead space.
 
-    So the content is measured in pixels ("ypixels") and converted using
-    the base font's line height. That accounts for mixed fonts and tag
-    spacing, because the pixel figure already includes them.
+    So the content is measured in pixels ("ypixels") and divided by the
+    base font's line height. That is only an ESTIMATE: the quotient is
+    off whenever the two disagree, which is exactly what mixed fonts and
+    per-tag spacing cause, and being one line short silently cuts a
+    reply off mid-sentence and leaves it scrollable.
+
+    The estimate is therefore corrected against the widget itself: its
+    own allocated height divided by the height currently set gives Tk's
+    real pixels-per-line, which is what the font metric only approximates.
+    Dividing the content by THAT lands on the right number in a step or
+    two, and a final loop grows by one line while anything is still
+    scrolled out of view.
+
+    Converging by measurement rather than by stepping ±1 matters for
+    speed, not just elegance: every probe costs an update_idletasks(),
+    which relays out the whole window. Stepping one line at a time cost
+    ~180 ms per message, enough to stutter visibly as replies arrive.
 
     The width guard is not optional. A Text that hasn't been laid out
     yet reports a width of 1 pixel, at which point every word wraps onto
@@ -404,10 +474,32 @@ class _AutoHeight:
     """
 
     MIN_USABLE_WIDTH = 40  # px; below this the widget hasn't been laid out yet
+    MAX_FIT_STEPS = 400    # safety net; a runaway loop would freeze the UI
+
+    @staticmethod
+    def _content_pixels(widget, last_line_height):
+        """Total pixel height of the text.
+
+        "ypixels" counts the distance BETWEEN the two indices, not the
+        height of what lies between them — a single-line body reports 0,
+        a three-line one reports roughly two lines. Measuring to the last
+        character and adding that line back is what makes the figure a
+        height. (The same off-by-one-line trap as "displaylines", in
+        different units.)
+        """
+        value = widget.count("1.0", "end-1c", "ypixels")
+        if isinstance(value, tuple):
+            value = value[0] if value else 0
+        return int(value or 0) + int(last_line_height)
+
+    # Measured pixels-per-line, keyed by font spec. Shared across every
+    # message body, because that is what it depends on.
+    _px_per_line = {}
 
     def __init__(self, widget):
         self.widget = widget
-        self.lines = None
+        self.estimate = None   # last ypixels-derived guess, the cache key
+        self.applied = None    # height actually set, after fitting
         self.pending = False
         widget.bind("<Configure>", self._schedule, add="+")
 
@@ -431,25 +523,106 @@ class _AutoHeight:
         try:
             if not widget.winfo_exists() or widget.winfo_width() < self.MIN_USABLE_WIDTH:
                 return
-            pixels = widget.count("1.0", "end-1c", "ypixels")
+            from tkinter import font as tkfont
+            line_height = tkfont.Font(root=widget, font=widget.cget("font")).metrics("linespace")
+            if not line_height:
+                return
+            pixels = self._content_pixels(widget, line_height)
         except tk.TclError:
             return
-        if isinstance(pixels, tuple):
-            pixels = pixels[0] if pixels else 0
-        pixels = int(pixels or 0)
         if pixels <= 0:
             return
 
-        try:
-            from tkinter import font as tkfont
-            line_height = tkfont.Font(root=widget, font=widget.cget("font")).metrics("linespace")
-        except tk.TclError:
-            return
-        if not line_height:
-            return
-
         # Round up: a partial line still needs a whole one to show in.
-        lines = max(1, -(-pixels // line_height))
-        if lines != self.lines:
-            self.lines = lines
-            widget.configure(height=lines)
+        estimate = max(1, -(-pixels // line_height))
+
+        # Cache on the ESTIMATE, not on the fitted height. Caching the
+        # fitted value would make the next pass see a mismatch, reset the
+        # widget back to the estimate, refit, and oscillate forever.
+        if estimate == self.estimate:
+            return
+        self.estimate = estimate
+
+        self.applied = estimate
+        widget.configure(height=estimate)
+        self._fit(widget, pixels)
+
+    def _fit(self, widget, content_pixels):
+        """Corrects the height until the content exactly fits.
+
+        Pixels-per-line is a property of the widget's base font, not of
+        the message, so it is measured once and shared by every body
+        using that font. With it known, the height is pure arithmetic and
+        needs no layout pass at all — which is what keeps appending a
+        reply O(1) instead of relaying out the whole transcript.
+        """
+        font_key = str(widget.cget("font"))
+        pixels_per_line = self._px_per_line.get(font_key)
+
+        try:
+            if pixels_per_line is None:
+                widget.update_idletasks()
+                allocated = widget.winfo_height()
+                if allocated <= 0 or self.applied <= 0:
+                    return
+                pixels_per_line = allocated / self.applied
+                if pixels_per_line <= 0:
+                    return
+                self._px_per_line[font_key] = pixels_per_line
+
+            ideal = max(1, math.ceil(content_pixels / pixels_per_line))
+            if ideal != self.applied:
+                self.applied = ideal
+                widget.configure(height=ideal)
+
+            widget.yview_moveto(0.0)
+        except tk.TclError:
+            pass   # widget destroyed mid-fit (theme switch, session reset)
+
+    def verify(self):
+        """Makes the height exactly right, by asking the laid-out widget.
+
+        The arithmetic in _fit is a good guess, not a guarantee: ypixels
+        is read before the surrounding layout has settled at its final
+        width, so it can be measured against a stale wrap. Skipping this
+        pass leaves roughly two thirds of a long transcript clipped, so
+        it is load-bearing rather than defensive.
+
+        Grows first — being short cuts a reply off mid-sentence — then
+        trims the slack an over-estimate left behind, computed in one
+        step from the widget's own pixels-per-line rather than by
+        stepping down a line at a time.
+        """
+        widget = self.widget
+        try:
+            if not widget.winfo_exists() or widget.winfo_width() < self.MIN_USABLE_WIDTH:
+                return
+
+            for _ in range(self.MAX_FIT_STEPS):
+                if widget.yview()[1] >= 1.0:
+                    break
+                self.applied = (self.applied or 1) + 1
+                widget.configure(height=self.applied)
+                widget.update_idletasks()
+
+            allocated = widget.winfo_height()
+            if allocated and self.applied:
+                pixels_per_line = allocated / self.applied
+                content = self._content_pixels(widget, pixels_per_line)
+                ideal = max(1, math.ceil(content / pixels_per_line))
+                if ideal < self.applied:
+                    self.applied = ideal
+                    widget.configure(height=ideal)
+                    widget.update_idletasks()
+                    # Trimming must never reintroduce clipping.
+                    for _ in range(self.MAX_FIT_STEPS):
+                        if widget.yview()[1] >= 1.0:
+                            break
+                        self.applied += 1
+                        widget.configure(height=self.applied)
+                        widget.update_idletasks()
+
+            widget.yview_moveto(0.0)
+        except tk.TclError:
+            pass
+
