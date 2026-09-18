@@ -17,7 +17,7 @@ Pick one from the dropdown right above the API key field on Settings —
 each profile remembers its own choice, key, and (for Custom) URL.
 
 - **OpenRouter** (default) — the most complete option: model families,
-  free-models filter, balance check, moderator web search, and &#36; cost
+  free-models filter, balance check, moderator web search, and $ cost
   tracking all work.
 - **Requesty** — a similarly-shaped hosted router (same `provider/model`
   ID convention, so families work the same way, and it reports request
@@ -29,7 +29,7 @@ each profile remembers its own choice, key, and (for Custom) URL.
   (LM Studio, Ollama, etc.), a self-hosted proxy, or another cloud
   provider. Type its base URL in Settings. No families (there's no
   fixed vendor-prefix convention to match against for an arbitrary
-  server), no balance/free-filter/web-search UI, no &#36; budget tracking
+  server), no balance/free-filter/web-search UI, no $ budget tracking
   (such servers essentially never report a cost) — just chat plus an
   optional raw JSON reasoning fragment per participant, see below.
   **Experimental** — request/response shapes vary enough between local
@@ -171,7 +171,7 @@ exactly as it was; both are always kept in the saved profile
 regardless of which is currently active.
 
 **Free models only** (OpenRouter only) — a checkbox that filters the ID
-autocomplete down to &#36;0-priced models, detected via OpenRouter's own
+autocomplete down to $0-priced models, detected via OpenRouter's own
 per-model pricing data and refreshed together with the main model
 list. Switches instantly, no extra network call. Not available for
 Requesty (its model list doesn't expose pricing) or Custom.
@@ -239,12 +239,12 @@ regardless of whether the moderator remembered to ask for one.
 
 Two independent stop conditions, whichever hits first:
 
-- **Budget** (&#36;, set in Settings; OpenRouter/Requesty only — the field
-  is hidden entirely for Custom, which essentially never reports a &#36;
+- **Budget** ($, set in Settings; OpenRouter/Requesty only — the field
+  is hidden entirely for Custom, which essentially never reports a $
   cost) — includes both participant replies and moderator calls. The
   provider returns an exact cost per request; it's shown under each
   reply (in italic gray, right-aligned), split out when a moderator
-  call is folded in (e.g. "&#36;0.0031 + moderator &#36;0.0012 = &#36;0.0043").
+  call is folded in (e.g. "$0.0031 + moderator $0.0012 = $0.0043").
 - **Max replies** (set on the Chat tab) — counts only participant
   replies, not the moderator's own calls or your own turns. The only
   stop condition that applies to Custom.
@@ -362,7 +362,7 @@ ai_brainstorm/
   The exe shrank from 10.7 MB to 10.2 MB — with the bundled fonts
   already included.
 - **2026-09-18** — Fixed end-of-session spend reconciliation. Paid
-  providers always reported "actually charged: &#36;0.0000": the key's
+  providers always reported "actually charged: $0.0000": the key's
   balance was read the instant the last reply landed, but providers post
   the charge asynchronously, so the difference was necessarily zero. The
   figure is now re-read a few times, and if the provider still hasn't
