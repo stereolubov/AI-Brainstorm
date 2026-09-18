@@ -61,6 +61,26 @@ style), no pricing/cost UI, no web plugin, and reasoning is a raw
 per-slot JSON fragment the person writes themselves rather than a
 guessed shape (see reasoning_format="raw" and
 api_client.ask_model's handling of reasoning_raw).
+
+NanoGPT (docs.nano-gpt.com) has the most detailed public API docs of
+any provider checked so far — a full OpenAPI spec — which made two
+things easy to confirm and two things easy to rule out:
+- Reasoning: a flat top-level "reasoning_effort" string
+  ("none"/"minimal"/"low"/"medium"/"high"/"xhigh") — the same shape as
+  Requesty's, so reasoning_format="effort" (our existing code) works
+  unchanged; our 4 fixed levels map onto a valid subset of theirs.
+- Model IDs: confirmed "provider/model" convention (e.g.
+  "anthropic/claude-opus-4.6") — families work.
+- Cost: their own pricing page states every response includes the
+  exact cost charged, but their published OpenAPI schema for
+  chat-completions usage doesn't list a "cost" field by name, so we
+  don't know what key it's actually under — left off (has_cost_tracking
+  =False) rather than guess a field name that might not match.
+- Balance: a documented POST /check-balance exists, but it
+  authenticates with a different header entirely (x-api-key, not
+  Authorization: Bearer like every other endpoint) — our
+  get_key_info()/_request() send Bearer uniformly, so this would need
+  new per-endpoint auth handling to support; left off for now.
 """
 
 DEFAULT_PROVIDER = "openrouter"
@@ -117,6 +137,29 @@ PROVIDERS = {
                                        # OpenRouter — confirmed compatible with our existing payload
         "models_docs_url": "https://polza.ai/models",
         "reasoning_docs_url": "https://polza.ai/docs/osobennosti/reasoning-tokens",
+    },
+    "nanogpt": {
+        "name": "NanoGPT",
+        "base_url": "https://nano-gpt.com/api/v1",
+        "currency": "USD",
+        "has_pricing_data": False,    # /models does return per-model pricing, but the exact-cost field
+                                       # name in a completion's usage isn't confirmed (see below) — left
+                                       # both pricing-related flags off together for now, not partial
+        "has_cost_tracking": False,   # their pricing page says every response includes exact cost, but
+                                       # the published OpenAPI schema doesn't name a "cost" field in
+                                       # usage — not guessing a key that might not match
+        "has_web_plugin": False,      # web search exists (rich: many providers, :online suffixes,
+                                       # a webSearch request object) but nothing like OpenRouter's
+                                       # simple universal plugins:[{"id":"web"}] flag — different shape
+        "has_key_info": False,        # POST /check-balance exists and is fully documented, but
+                                       # authenticates with a DIFFERENT header (x-api-key) than every
+                                       # other endpoint (Authorization: Bearer) — needs new per-endpoint
+                                       # auth handling our get_key_info()/_request() don't have yet
+        "uses_families": True,        # confirmed "provider/model" convention, same as OpenRouter
+        "reasoning_format": "effort",  # confirmed flat top-level "reasoning_effort" string, same shape
+                                       # as Requesty's — our existing code works with zero changes
+        "models_docs_url": "https://nano-gpt.com/pricing",
+        "reasoning_docs_url": "https://docs.nano-gpt.com/api-reference/miscellaneous/extended-thinking",
     },
     "custom": {
         "name": "Custom",
