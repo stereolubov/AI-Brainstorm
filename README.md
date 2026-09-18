@@ -49,23 +49,39 @@ python main.py
 
 ```
 pip install pyinstaller
-pyinstaller --onefile --windowed --icon=favicon.ico --add-data "favicon.ico;." --name AIBrainstorm main.py
+python build.py
 ```
 
-Drop a `favicon.ico` next to `main.py` before building if you want a
-custom app icon — `--icon` embeds it into the exe file itself (what
-Explorer shows), while `--add-data` bundles the actual file so the
-running app can also set its own window/taskbar icon at runtime via
-`iconbitmap()` and a direct WinAPI call (`WM_SETICON`) for a crisp
-icon in Alt+Tab and jump lists, not just a blurry upscale. Skip both
-flags if you don't have an icon.
+The exe appears in `dist/AI-Brainstorm-release.exe` — about 10 MB, with
+no external dependencies. PyInstaller caches aggressively, so `build.py`
+always builds clean and clears `build/` afterwards.
 
-If you rebuild with a different icon after an existing build, delete
-`build/`, `dist/`, and the `.spec` file first — PyInstaller caches
-aggressively.
+Every build setting lives in `AI-Brainstorm.spec` rather than on the
+command line: the list of excluded stdlib modules, the filter for Tcl
+modules a plain Tk GUI never sources, the icon, and the `fonts/` folder.
+That file is tracked in the repo — a build recipe should not exist only
+on one machine.
 
-The exe appears in `dist/AIBrainstorm.exe`. Drop `--windowed` while
-debugging to see console output.
+```
+python build.py --console
+```
+
+Builds the same thing with a console attached. This exists because a
+windowed onefile exe that fails during startup dies silently with exit
+code 1 and nothing to read; the console build prints the traceback
+instead. If a release build suddenly stops launching, a too-aggressive
+entry in the spec's `EXCLUDES` is the usual cause.
+
+`favicon.ico` is embedded into the exe (what Explorer shows) and also
+bundled inside it, so the running app can set its own window and taskbar
+icon via `iconbitmap()` and a direct WinAPI call (`WM_SETICON`) — for a
+crisp icon in Alt+Tab rather than a blurry upscale.
+
+Manrope and JetBrains Mono (both SIL OFL) live in `fonts/` and are
+bundled into the exe. The app registers them into its own process only,
+via `AddFontResourceEx` — nothing is installed system-wide and no admin
+rights are needed. If the files are missing or registration fails, the
+UI quietly falls back to Segoe UI and Consolas.
 
 ## Interface language
 
@@ -239,36 +255,45 @@ without spamming the chat; the reason stays visible in the Log tab.
 
 ## Chat display
 
+- Every reply is its own card, carrying the speaker's color as a stripe
+  down its left edge, the exact model id next to the name, and what that
+  reply cost, aligned right.
+- Your own turns — the topic and any intervention — also get a tinted
+  background; the session summary keeps its own accent color.
 - `**bold**`, `` `inline code` ``, fenced ` ```code blocks``` `,
   headers, and bullet lists render properly, not as raw markdown.
-- Replies are visually separated with a rule.
-- Your own notes (topic, comments, replies) are colored distinctly; the
-  session summary gets its own accent color.
-- **Ctrl+C** copies the selection, **Ctrl+A** selects everything,
-  "Copy All" grabs the whole log in one click.
-- **Export…** saves to `.md` or `.txt`, built from the original
-  message text (with all its markdown intact), not from what's
-  rendered on screen.
+- **Ctrl+C** copies the selection. Selecting works inside one reply, not
+  across several — each reply is a separate widget, which is what lets
+  it have its own background and stripe.
+- **Copy All** and **Export…** are unaffected by that: both are built
+  from the original message text, with all its markdown intact, rather
+  than scraped off the screen. Export saves `.md` or `.txt`.
 
 ## Log tab
 
 An optional tab mirroring what a console would show — model calls,
-costs, moderator decisions, errors. Toggle it on the Settings tab; it
-keeps its own history for the whole app session even while hidden.
-Copies and selects the same way the chat log does.
+costs, moderator decisions, errors. Laid out as a table: timestamp, a
+colored badge for the level, then the message. Toggle it on the Settings
+tab; it keeps its own history for the whole app session even while
+hidden. Unlike the chat, it is one text widget, so **Ctrl+A** and
+**Ctrl+C** work across the whole log.
 
 ## Project layout
 
 ```
 ai_brainstorm/
-├── main.py             — entry point, Tkinter UI, moderator/worker logic
+├── main.py              — entry point, Tkinter UI, moderator/worker logic
 ├── config.py            — profiles, app-wide settings, locale folder paths
 ├── models_catalog.py    — model families, reasoning levels, catalog assembly
 ├── api_client.py        — provider-agnostic API calls: chat, moderator, model list, key balance
-├── i18n.py               — translation loading/fallback, built-in RU/EN dictionaries
-├── theme.py               — Light/Dark palettes, ttk.Style() + plain Text/Canvas theming
-├── providers.py           — provider registry (OpenRouter/Requesty/Custom) and capability flags
-├── favicon.ico           — app icon (optional, add your own)
+├── i18n.py              — translation loading/fallback, built-in RU/EN dictionaries
+├── theme.py             — design tokens for both themes, fonts, ttk.Style() + Text/Canvas theming
+├── ui_widgets.py        — composite widgets ttk lacks: tab strip, cards, message feed
+├── providers.py         — provider registry (OpenRouter/Requesty/Polza/Custom) and capability flags
+├── build.py             — one-command single-exe build (--console for a diagnostic one)
+├── AI-Brainstorm.spec   — every build setting: excludes, icon, bundled data
+├── fonts/               — Manrope + JetBrains Mono (SIL OFL), bundled into the exe
+├── favicon.ico          — app icon (optional, add your own)
 ├── README.md / README.ru.md
 ```
 
@@ -323,4 +348,23 @@ ai_brainstorm/
   connecting from Russia.
 - **2026-09-05** — Added support for attaching an image to the topic
   for discussion.
+- **2026-09-18** — New interface design. Settings are grouped into
+  numbered cards 01–06; the chat is now a feed where every reply is its
+  own card with the speaker's color stripe, model id and cost; the tabs
+  have their own strip with an underline on the active one and a
+  provider chip on the right. Both themes, Light and Dark, were redrawn
+  from scratch. Manrope and JetBrains Mono are bundled into the exe and
+  registered at startup — nothing has to be installed system-wide. The
+  Log tab is now a table: time, colored level badge, message.
+- **2026-09-18** — Building is one command, `python build.py`
+  (`--console` produces a diagnostic build with a console attached).
+  `AI-Brainstorm.spec` is no longer gitignored and lives in the repo.
+  The exe shrank from 10.7 MB to 10.2 MB — with the bundled fonts
+  already included.
+- **2026-09-18** — Fixed end-of-session spend reconciliation. Paid
+  providers always reported "actually charged: $0.0000": the key's
+  balance was read the instant the last reply landed, but providers post
+  the charge asynchronously, so the difference was necessarily zero. The
+  figure is now re-read a few times, and if the provider still hasn't
+  posted it, the app says so instead of presenting a zero as fact.
 
